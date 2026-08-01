@@ -19,9 +19,9 @@
   async function handleWhatsNew() {
     try {
       const { openUrl } = await import('@tauri-apps/plugin-opener');
-      await openUrl('https://github.com/digyear/Clauge/releases/latest');
+      await openUrl('https://github.com/digyear/ZeroAny-Workbench/releases/latest');
     } catch {
-      window.open('https://github.com/digyear/Clauge/releases/latest', '_blank');
+      window.open('https://github.com/digyear/ZeroAny-Workbench/releases/latest', '_blank');
     }
   }
 

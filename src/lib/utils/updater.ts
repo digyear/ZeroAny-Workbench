@@ -16,7 +16,7 @@ export interface UpdateNoticeInfo {
 
 // User-facing changelog page (with download buttons). Preferred over the
 // GitHub releases UI for non-developer users.
-const CHANGELOG_URL = 'https://github.com/digyear/Clauge/releases/latest';
+const CHANGELOG_URL = 'https://github.com/digyear/ZeroAny-Workbench/releases/latest';
 
 // All users now follow the stable channel. The previous Settings → About
 // "Receive pre-release updates" toggle was removed; any user who had
@@ -174,7 +174,7 @@ export async function checkWhatsNew(currentVersion: string): Promise<{ version: 
   if (lastSeen && lastSeen !== currentVersion) {
     try {
       const res = await fetch(
-        `https://api.github.com/repos/digyear/Clauge/releases/tags/v${currentVersion}`
+        `https://api.github.com/repos/digyear/ZeroAny-Workbench/releases/tags/v${currentVersion}`
       );
       if (res.ok) {
         const data = await res.json();

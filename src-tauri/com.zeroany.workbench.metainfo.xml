@@ -24,8 +24,8 @@
 
   <launchable type="desktop-id">ZeroAny Workbench.desktop</launchable>
 
-  <url type="homepage">https://github.com/digyear/Clauge</url>
-  <url type="bugtracker">https://github.com/digyear/Clauge/issues</url>
+  <url type="homepage">https://github.com/digyear/ZeroAny-Workbench</url>
+  <url type="bugtracker">https://github.com/digyear/ZeroAny-Workbench/issues</url>
 
   <categories>
     <category>Development</category>

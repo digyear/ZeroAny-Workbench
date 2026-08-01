@@ -5901,7 +5901,7 @@
                                 <div class="about-links">
                                     <a
                                         class="about-link-btn"
-                                        href="https://github.com/digyear/Clauge"
+                                        href="https://github.com/digyear/ZeroAny-Workbench"
                                         target="_blank"
                                         rel="noopener"
                                         title="GitHub Repository"
@@ -5915,7 +5915,7 @@
                                     </a>
                                     <a
                                         class="about-link-btn"
-                                        href="https://github.com/digyear/Clauge/issues/new/choose"
+                                        href="https://github.com/digyear/ZeroAny-Workbench/issues/new/choose"
                                         target="_blank"
                                         rel="noopener"
                                         title="Report an Issue"

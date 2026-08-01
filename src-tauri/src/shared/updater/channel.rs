@@ -4,10 +4,10 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 
 const REPO_OWNER: &str = "digyear";
-const REPO_NAME: &str = "Clauge";
+const REPO_NAME: &str = "ZeroAny-Workbench";
 
 const STABLE_ENDPOINT: &str =
-    "https://github.com/digyear/Clauge/releases/latest/download/latest.json";
+    "https://github.com/digyear/ZeroAny-Workbench/releases/latest/download/latest.json";
 
 #[derive(Debug, Deserialize)]
 struct GhRelease {

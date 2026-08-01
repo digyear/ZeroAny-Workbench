@@ -12,9 +12,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/digyear/Clauge/releases/latest"><img src="https://img.shields.io/github/v/release/digyear/Clauge?style=flat-square&color=ff5436&label=latest" alt="Release"></a>
+  <a href="https://github.com/digyear/ZeroAny-Workbench/releases/latest"><img src="https://img.shields.io/github/v/release/digyear/ZeroAny-Workbench?style=flat-square&color=ff5436&label=latest" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-7c5cf8?style=flat-square" alt="License"></a>
-  <a href="https://github.com/digyear/Clauge/stargazers"><img src="https://img.shields.io/github/stars/digyear/Clauge?style=flat-square&color=f5a623" alt="Stars"></a>
+  <a href="https://github.com/digyear/ZeroAny-Workbench/stargazers"><img src="https://img.shields.io/github/stars/digyear/ZeroAny-Workbench?style=flat-square&color=f5a623" alt="Stars"></a>
   <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri-CE422B?style=flat-square" alt="Rust + Tauri">
   <img src="https://img.shields.io/badge/binary-~25%20MB-4f94d4?style=flat-square" alt="~20 MB">
   <img src="https://img.shields.io/badge/MCP-built--in-1dc880?style=flat-square" alt="MCP built-in">
@@ -24,9 +24,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/digyear/Clauge">Project</a> ·
-  <a href="https://github.com/digyear/Clauge/releases/latest"><strong>Download →</strong></a> ·
-  <a href="https://github.com/digyear/Clauge/issues">Report a bug</a>
+  <a href="https://github.com/digyear/ZeroAny-Workbench">Project</a> ·
+  <a href="https://github.com/digyear/ZeroAny-Workbench/releases/latest"><strong>Download →</strong></a> ·
+  <a href="https://github.com/digyear/ZeroAny-Workbench/issues">Report a bug</a>
 </p>
 
 <p align="center">
@@ -36,9 +36,9 @@
 ---
 
 > [!IMPORTANT]
-> **ZeroAny Workbench is an unofficial, non-commercial fork of Clauge.** It is not
-> affiliated with or endorsed by ClaugeHQ. The original copyright and
-> PolyForm Noncommercial License 1.0.0 remain in effect.
+> **ZeroAny Workbench is an independent, non-commercial developer product under the
+> ZeroAny brand.** The original copyright notices and PolyForm Noncommercial License
+> 1.0.0 remain in effect.
 
 ---
 
@@ -188,8 +188,8 @@ Add to your `claude_desktop_config.json`:
 ```jsonc
 {
   "mcpServers": {
-    "clauge": {
-      "command": "clauge",
+    "zeroany-workbench": {
+      "command": "zeroany-workbench",
       "args": ["mcp", "serve", "--stdio"]
     }
   }
@@ -202,29 +202,20 @@ Point your MCP client at the local ZeroAny Workbench process (`stdio` or `http:/
 
 ---
 
-## AI assistance — bring your own key, or use Clauge AI
+## AI assistance — bring your own key, or use ZeroAny AI
 
 Every mode's AI runs on the provider you choose.
 
 | Option | How it works |
 |---|---|
 | **BYOK** | Drop in your own Anthropic, OpenAI, Google, or OpenCode key — ZeroAny Workbench talks directly to the provider. No middleman. |
-| **Clauge AI credits** | Subscribe and use upstream Clauge-managed credits across every mode and every provider — no separate billing. |
+| **ZeroAny AI credits** | Use managed AI credits across every mode and every provider — no separate billing. |
 
 Set keys in **Settings → AI Providers**. Per-mode model choice; per-session model override.
 
 ## Cloud sync
 
 Opt-in, encrypted.Agent Context, Co-Worker Profil, REST collections,SQL/NoSQL and SSH profiles sync across machines — or stay local, your call. Sessions and credentials never leave the device unless you explicitly enable sync for them.
-
----
-
-## Mobile
-
-Drive your desktop from your phone. The upstream **Clauge** companion app attaches to any running **Agent** (Claude · Codex · Gemini · OpenCode) or **SSH** session — watch it live, send prompts, and approve actions — over your local network or Tailscale.
-
-- **Android** — [download](https://github.com/ClaugeHQ/clauge-android/releases/latest) · [source](https://github.com/ClaugeHQ/clauge-android)
-- **iOS** — [download](https://github.com/ClaugeHQ/clauge-ios/releases/latest) · [source](https://github.com/ClaugeHQ/clauge-ios)
 
 ---
 
@@ -240,11 +231,11 @@ Drive your desktop from your phone. The upstream **Clauge** companion app attach
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=digyear%2FClauge&type=date&legend=bottom-right">
+<a href="https://www.star-history.com/?repos=digyear%2FZeroAny-Workbench&type=date&legend=bottom-right">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=digyear/Clauge&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=digyear/Clauge&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=digyear/Clauge&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=digyear/ZeroAny-Workbench&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=digyear/ZeroAny-Workbench&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=digyear/ZeroAny-Workbench&type=date&legend=top-left" />
  </picture>
 </a>
 

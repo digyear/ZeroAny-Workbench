@@ -227,8 +227,8 @@
       case 'sync': openSettingsTab('account'); break;
       case 'settings': openSettingsTab('account'); break;
       case 'check-updates': handleCheckForUpdates(); break;
-      case 'whats-new': openExternal('https://github.com/digyear/Clauge/releases/latest'); break;
-      case 'report': openExternal('https://github.com/digyear/Clauge/issues/new/choose'); break;
+      case 'whats-new': openExternal('https://github.com/digyear/ZeroAny-Workbench/releases/latest'); break;
+      case 'report': openExternal('https://github.com/digyear/ZeroAny-Workbench/issues/new/choose'); break;
       case 'about': openSettingsTab('about'); break;
     }
   }
