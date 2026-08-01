@@ -50,7 +50,7 @@ You've been flipping between multiple apps to do one job. ZeroAny Workbench runs
 
 | | Mode | What it does | Key capabilities |
 |---|---|---|---|
-| `01` | **Agent** | Run multiple coding agents in parallel — each with its own purpose, git worktree, and context. | Claude · Codex · Gemini · OpenCode · purpose-pinned sessions · Context Manager · Plugin Manager · per-session git identity · usage analytics |
+| `01` | **Agent** | Run multiple coding agents in parallel — and bring existing local sessions into one searchable center. | Claude · Codex · Gemini · OpenCode · Hermes profiles · global Session Center · isolated git worktrees · reliable session resume · Context Manager · per-session git identity · usage analytics |
 | `02` | **Workspace** | Boards + notes your agents can read, write, and act on. | Kanban boards · markdown notes · AI coworkers · GitHub & GitLab issue import · full MCP integration |
 | `03` | **REST** | An API client your AI — and any external agent — can drive. | Collections · environments · AI batch runner · MCP-exposed (agents create / read / update / delete collections and requests) |
 | `04` | **SQL** | One client, every engine. | PostgreSQL · MySQL · ClickHouse · SQLite · Cloudflare D1 · schema-aware AI · cross-dialect translation · SSH tunnels shared with other modes |
@@ -67,15 +67,31 @@ Plus a cross-mode **History** layer — a queryable log of every session, reques
 
 ### Agent
 
-Spawn coding agents in parallel — **Claude**, **Codex**, **Gemini**, **OpenCode** — without ever leaving the editor. Each session is independent: its own git worktree, its own context, its own model.
+Spawn coding agents in parallel — **Claude**, **Codex**, **Gemini**, **OpenCode**, and **Hermes Agent** — without ever leaving the editor. Each managed session is independent: its own purpose, git worktree, context, model, and provider-native session identity.
 
 Per-session controls:
 
 - **Purpose** — pin the session's intent up front (see table below)
+- **Provider** — choose Claude, Codex, Gemini, OpenCode, or Hermes for each session
+- **Hermes profile** — choose the default or a named Hermes profile and keep that identity when the session is reopened
+- **Base branch + worktree branch** — start from the repository's current branch by default, then edit either value before creating an isolated worktree
 - **Git identity** — commit as a coworker, not yourself
 - **Skip permissions** — for fully-autonomous runs when you trust the prompt
 - **Context injection** — pin files, folders, or MCP servers via the **Context Manager** (save sets, reuse across sessions)
 - **Plugins** — load extra tools from the **Plugin Manager**
+- **Resume** — reopen the provider's original conversation instead of silently starting a new one
+
+#### Session Center
+
+ZeroAny Workbench does not limit you to sessions created inside the app. The global **Session Center** discovers existing local conversations from supported agent CLIs and turns them into one searchable catalog.
+
+- **Cross-provider discovery** — scan Claude, Codex, Gemini, OpenCode, and every active Hermes profile from one view
+- **Project-aware grouping** — worktree conversations are grouped under their canonical main repository instead of appearing as unrelated projects
+- **Search and filters** — filter by provider, project, date range, and status; search titles, previews, paths, native session IDs, and Hermes profile names
+- **Profile-safe identity** — identical Hermes session IDs in different profiles remain separate, and adopted sessions resume with their original profile
+- **Adopt or hide** — open an external conversation as a managed ZeroAny Workbench session, or hide catalog entries without deleting provider-owned data
+- **Fault-tolerant refresh** — one unreadable Hermes profile cannot prevent other profiles and providers from being discovered
+- **Resume fidelity** — preserve native session IDs through Hermes compression and immediate same-process reopen, so continuing a conversation does not accidentally create a fresh session
 
 #### Purposes
 
@@ -88,7 +104,7 @@ Every ZeroAny Workbench session has a **purpose** that shapes the agent's focus 
 | **Code Review** | Bugs, security holes, edge cases — with file and line references |
 | **PR Review** | End-to-end pull-request analysis: what changed, what's good, what needs work |
 | **Debugging** | Root cause, not band-aids — reproduce, trace, verify the fix actually works |
-| **Custom** | Import an existing Claude Code session or define your own mode |
+| **Custom** | Resume an existing provider session or define your own mode |
 
 Every session emits **usage analytics** — tokens in / out, cost, cache hit, model mix — per session and aggregated across your day.
 
@@ -168,6 +184,8 @@ A free-form spatial workspace where every open tab becomes a draggable window. P
 **One window, not many.** Every developer's day is fragmented across a code editor, a REST client, a SQL GUI, a Mongo shell, a terminal, and a project board. ZeroAny Workbench collapses all of them into one shell with shared sessions, shared SSH tunnels, and shared AI context — switch modes with one keystroke.
 
 **An AI per workflow, not a generic chat.** REST's AI understands your collections. SQL's AI knows your schema. SSH's AI refuses destructive commands without confirmation. The Workspace AI moves cards, leaves comments, and raises pull requests. Each one is tuned for what it sits next to — not a single chatbot bolted onto the side.
+
+**Your existing agent history, not another empty inbox.** Session Center indexes conversations already stored by your local agent CLIs, groups worktree sessions under the real project, and lets you resume or adopt them without copying provider-owned data into a proprietary cloud.
 
 **Built-in MCP server, not a plug-in.** ZeroAny Workbench runs an MCP server out of the box, exposing 45+ tools across boards, cards, notes, REST collections, and coworker coordination. Claude Desktop, Cursor, Cline, Continue, or any MCP-speaking client can read, edit, and add to your workspace from the outside.
 

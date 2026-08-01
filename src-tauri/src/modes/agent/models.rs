@@ -50,6 +50,9 @@ pub struct AgentSession {
     /// non-standard prefix, an asdf/nvm shim path, or a per-project
     /// pinned version. Migration 17 added the column.
     pub binary_path: Option<String>,
+    /// Provider-native profile selected when the session was created.
+    /// Currently used by Hermes; `None` preserves legacy/default behavior.
+    pub profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -79,6 +82,9 @@ pub struct DiscoveredSession {
 pub struct AgentDiscoveredSession {
     pub id: String,
     pub provider: String,
+    /// Provider-native profile that owns the session. Hermes uses
+    /// `default` or a named profile; providers without profiles return None.
+    pub profile: Option<String>,
     pub external_session_id: String,
     /// Provider-native cwd. Kept unchanged so resume opens in the original
     /// worktree rather than silently switching to the main checkout.
@@ -103,6 +109,7 @@ pub struct AgentDiscoveredSession {
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveredSessionUpsert {
     pub provider: String,
+    pub profile: Option<String>,
     pub external_session_id: String,
     pub project_path: Option<String>,
     pub project_root: Option<String>,

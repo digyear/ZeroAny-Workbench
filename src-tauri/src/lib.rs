@@ -522,6 +522,7 @@ pub fn run() {
             // Agent mode
             modes::agent::commands::agent_list_sessions,
             modes::agent::commands::agent_create_session,
+            modes::agent::commands::agent_list_profiles,
             modes::agent::commands::agent_update_session,
             modes::agent::commands::agent_delete_session,
             modes::agent::commands::agent_update_session_id,

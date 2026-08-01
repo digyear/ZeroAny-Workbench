@@ -28,6 +28,8 @@ export const agentCreateSession = (params: {
   /** Absolute path to the CLI binary (when the user picked one in the
    *  Advanced section). Omit / empty string = use $PATH lookup. */
   binaryPath?: string;
+  /** Provider-native profile. Currently supported by Hermes. */
+  profile?: string;
   /** Project-root branch/ref used as the starting point for the worktree. */
   baseBranch?: string;
   /** User-editable branch created for this session. */
@@ -48,6 +50,8 @@ export const agentDeleteSession = (id: string) => invoke<void>('agent_delete_ses
 export const agentUpdateSessionId = (id: string, claudeSessionId: string) => invoke<void>('agent_update_session_id', { id, claudeSessionId });
 export const agentUpdateLastUsed = (id: string) => invoke<void>('agent_update_last_used', { id });
 export const agentUpdateWorktree = (id: string, worktreePath: string | null, worktreeBranch: string | null) => invoke<void>('agent_update_worktree', { id, worktreePath, worktreeBranch });
+export const agentListProfiles = (provider: string) =>
+  invoke<string[]>('agent_list_profiles', { provider });
 
 // Context CRUD
 export const agentListContexts = () => invoke<AgentContext[]>('agent_list_contexts');
@@ -84,6 +88,8 @@ export const agentSpawnTerminal = (params: {
   /** Absolute binary path override for this session. Omit / empty
    *  string = use the standard $PATH lookup. */
   binaryPath?: string;
+  /** Persisted provider-native profile for deterministic launch/resume. */
+  profile?: string;
   onOutput: any;
 }) => invoke<string>('agent_spawn_terminal', params);
 export const agentSpawnShell = (projectPath: string, onOutput: any) => invoke<string>('agent_spawn_shell', { projectPath, onOutput });
@@ -178,10 +184,10 @@ export const agentGetUsageAnalytics = (days?: number, provider?: string) =>
   invoke<UsageAnalytics>('agent_get_usage_analytics', { days, provider });
 export const agentFetchUsageLimits = (sessionKey: string) => invoke<any>('agent_fetch_usage_limits', { sessionKey });
 export const agentFetchCodexUsageLimits = (accessToken: string) => invoke<any>('agent_fetch_codex_usage_limits', { accessToken });
-export const agentDiscoverSessions = (projectPath: string, provider?: string) =>
-  invoke<DiscoveredSession[]>('agent_discover_sessions', { projectPath, provider });
-export const agentResolveResumeId = (projectPath: string, provider?: string) =>
-  invoke<string | null>('agent_resolve_resume_id', { projectPath, provider });
+export const agentDiscoverSessions = (projectPath: string, provider?: string, profile?: string) =>
+  invoke<DiscoveredSession[]>('agent_discover_sessions', { projectPath, provider, profile });
+export const agentResolveResumeId = (projectPath: string, provider?: string, profile?: string) =>
+  invoke<string | null>('agent_resolve_resume_id', { projectPath, provider, profile });
 export const agentScanDiscoveredSessions = (provider?: string) =>
   invoke<DiscoveredSessionScanSummary>('agent_scan_discovered_sessions', { provider });
 export const agentListDiscoveredSessions = (params: {

@@ -50,7 +50,7 @@ mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
 
     #[tokio::test]
-    async fn fresh_database_has_discovered_session_project_root() {
+    async fn fresh_database_has_latest_agent_session_columns() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -67,5 +67,115 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(count, 1);
+
+        let profile_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('agent_sessions') \
+             WHERE name = 'profile'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(profile_count, 1);
+
+        let discovered_profile_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('agent_discovered_sessions') \
+             WHERE name = 'profile'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(discovered_profile_count, 1);
+
+        // Provider-native ids are only unique inside a Hermes profile.
+        // The catalog must preserve both rows so each can be resumed from
+        // its owning state.db.
+        for (id, profile) in [
+            ("hermes:default:same-id", "default"),
+            ("hermes:cozy-engineer:same-id", "cozy-engineer"),
+        ] {
+            sqlx::query(
+                "INSERT INTO agent_discovered_sessions (
+                    id, provider, profile, external_session_id,
+                    created_at, updated_at, last_seen_at
+                 ) VALUES (?, 'hermes', ?, 'same-id', 'now', 'now', 'now')",
+            )
+            .bind(id)
+            .bind(profile)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let same_id_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_discovered_sessions \
+             WHERE provider = 'hermes' AND external_session_id = 'same-id'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(same_id_count, 2);
+    }
+
+    #[tokio::test]
+    async fn discovered_profile_migration_preserves_existing_catalog_state() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE agent_sessions (id TEXT PRIMARY KEY);
+             INSERT INTO agent_sessions (id) VALUES ('managed-1');
+             CREATE TABLE agent_discovered_sessions (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                external_session_id TEXT NOT NULL,
+                project_path TEXT,
+                project_root TEXT,
+                project_name TEXT,
+                title TEXT,
+                preview TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                parent_external_session_id TEXT,
+                session_kind TEXT,
+                source_path TEXT,
+                hidden INTEGER NOT NULL DEFAULT 0,
+                hidden_at TEXT,
+                adopted_agent_session_id TEXT,
+                UNIQUE(provider, external_session_id)
+             );
+             INSERT INTO agent_discovered_sessions (
+                id, provider, external_session_id, project_path, project_root,
+                project_name, title, created_at, updated_at, last_seen_at,
+                hidden, hidden_at, adopted_agent_session_id
+             ) VALUES (
+                'hermes:legacy-id', 'hermes', 'legacy-id', '/repo', '/repo',
+                'repo', 'Legacy', 'created', 'updated', 'seen', 1, 'hidden-at',
+                'managed-1'
+             );",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../../migrations/29_agent_discovered_session_profile.sql"
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let row: (String, String, i64, Option<String>) = sqlx::query_as(
+            "SELECT id, profile, hidden, adopted_agent_session_id
+             FROM agent_discovered_sessions",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.0, "hermes:default:legacy-id");
+        assert_eq!(row.1, "default");
+        assert_eq!(row.2, 1);
+        assert_eq!(row.3.as_deref(), Some("managed-1"));
     }
 }

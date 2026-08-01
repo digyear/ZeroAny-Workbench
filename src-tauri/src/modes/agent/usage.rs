@@ -14,6 +14,7 @@ const GLOBAL_SCAN_FILE_CAP: usize = 1_500;
 #[derive(Debug, Clone)]
 struct ProviderDiscoveredSession {
     provider: String,
+    profile: Option<String>,
     external_session_id: String,
     project_path: Option<String>,
     project_name: Option<String>,
@@ -38,6 +39,7 @@ impl ProviderDiscoveredSession {
     fn into_upsert(self, now: &str, project_root: Option<String>) -> DiscoveredSessionUpsert {
         DiscoveredSessionUpsert {
             provider: self.provider,
+            profile: self.profile,
             external_session_id: self.external_session_id,
             project_path: self.project_path,
             project_root,
@@ -549,9 +551,10 @@ fn codex_auth_error(status: reqwest::StatusCode) -> String {
 pub fn agent_discover_sessions(
     project_path: String,
     provider: Option<String>,
+    profile: Option<String>,
 ) -> Result<Vec<DiscoveredSession>, String> {
     let provider = normalize_agent_provider(provider.as_deref())?;
-    discover_sessions_for_project(provider, &project_path)
+    discover_sessions_for_project(provider, &project_path, profile.as_deref())
         .map(|items| items.into_iter().map(|s| s.to_legacy()).collect())
 }
 
@@ -567,9 +570,10 @@ pub fn agent_discover_sessions(
 pub fn agent_resolve_resume_id(
     project_path: String,
     provider: Option<String>,
+    profile: Option<String>,
 ) -> Result<Option<String>, String> {
     let p = normalize_agent_provider(provider.as_deref())?;
-    let sessions = discover_sessions_for_project(p, &project_path)?;
+    let sessions = discover_sessions_for_project(p, &project_path, profile.as_deref())?;
     // discover_*_sessions sort descending by modified_at, so the first
     // entry is the newest. Empty list → None (no session created yet).
     Ok(sessions.into_iter().next().map(|s| s.external_session_id))
@@ -578,13 +582,14 @@ pub fn agent_resolve_resume_id(
 fn discover_sessions_for_project(
     provider: &str,
     project_path: &str,
+    profile: Option<&str>,
 ) -> Result<Vec<ProviderDiscoveredSession>, String> {
     let provider = normalize_agent_provider(Some(provider))?;
     match provider {
         "codex" => discover_codex_sessions(project_path),
         "gemini" => discover_gemini_sessions(project_path),
         "opencode" => discover_opencode_sessions(project_path),
-        "hermes" => discover_hermes_sessions(project_path),
+        "hermes" => discover_hermes_sessions(project_path, profile),
         _ => discover_claude_sessions(project_path),
     }
 }
@@ -773,10 +778,13 @@ pub async fn adopt_discovered_session_by_id(
         if let Some(session) = sqlx::query_as::<_, AgentSession>(
             "SELECT * FROM agent_sessions \
              WHERE provider = ? AND claude_session_id = ? AND origin = 'manual' \
+               AND (? != 'hermes' OR COALESCE(profile, 'default') = ?) \
              ORDER BY last_used_at DESC LIMIT 1",
         )
         .bind(provider)
         .bind(&discovered.external_session_id)
+        .bind(provider)
+        .bind(discovered.profile.as_deref().unwrap_or("default"))
         .fetch_optional(&mut *conn)
         .await
         .map_err(|e| e.to_string())?
@@ -827,8 +835,8 @@ pub async fn adopt_discovered_session_by_id(
                 id, title, purpose, project_path, project_name, claude_session_id,
                 context_prompt, skip_permissions, git_name, git_email,
                 created_at, last_used_at, origin, provider, binary_path,
-                base_branch, worktree_branch
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?)",
+                profile, base_branch, worktree_branch
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)",
         )
         .bind(&session_id)
         .bind(&title)
@@ -844,6 +852,7 @@ pub async fn adopt_discovered_session_by_id(
         .bind(&now)
         .bind(provider)
         .bind(Option::<&str>::None)
+        .bind(discovered.profile.as_deref())
         .bind(Option::<&str>::None)
         .bind(Option::<&str>::None)
         .execute(&mut *conn)
@@ -963,6 +972,7 @@ fn read_one_claude_session_file(path: &std::path::Path) -> Option<ProviderDiscov
 
     Some(ProviderDiscoveredSession {
         provider: "claude".to_string(),
+        profile: None,
         external_session_id: session_id,
         project_name: project_name_from_path_opt(cwd.as_deref()),
         project_path: cwd,
@@ -1285,6 +1295,7 @@ fn parse_codex_session(
 
     Some(ProviderDiscoveredSession {
         provider: "codex".to_string(),
+        profile: None,
         external_session_id: session_id,
         project_path: Some(cwd.to_string()),
         project_name: project_name_from_path_opt(Some(cwd)),
@@ -1465,6 +1476,7 @@ async fn query_opencode_sessions(
             };
             ProviderDiscoveredSession {
                 provider: "opencode".to_string(),
+                profile: None,
                 external_session_id: id,
                 project_name: project_name_from_path_opt(Some(&directory)),
                 project_path: Some(directory),
@@ -1483,46 +1495,93 @@ async fn query_opencode_sessions(
 /// Hermes keeps session metadata in `<HERMES_HOME>/state.db`. Filter by
 /// exact cwd so the resume picker only offers conversations created in the
 /// selected project (or its selected worktree).
-fn discover_hermes_sessions(project_path: &str) -> Result<Vec<ProviderDiscoveredSession>, String> {
-    discover_hermes_sessions_filtered(Some(project_path), GLOBAL_SCAN_CAP_PER_PROVIDER)
+fn discover_hermes_sessions(
+    project_path: &str,
+    profile: Option<&str>,
+) -> Result<Vec<ProviderDiscoveredSession>, String> {
+    discover_hermes_sessions_filtered(Some(project_path), GLOBAL_SCAN_CAP_PER_PROVIDER, profile)
 }
 
 fn discover_hermes_sessions_global(cap: usize) -> Result<Vec<ProviderDiscoveredSession>, String> {
-    discover_hermes_sessions_filtered(None, cap)
+    let runner = runner_for("hermes");
+    let stores = runner
+        .profiles()?
+        .into_iter()
+        .filter_map(|profile| {
+            runner
+                .sessions_root_for_profile(Some(&profile))
+                .map(|root| (profile, root.join("state.db")))
+        })
+        .collect();
+    discover_hermes_sessions_from_stores(None, cap, stores)
 }
 
 fn discover_hermes_sessions_filtered(
     project_path: Option<&str>,
     cap: usize,
+    profile: Option<&str>,
 ) -> Result<Vec<ProviderDiscoveredSession>, String> {
+    let profile = profile
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("default")
+        .to_string();
     let db_path = runner_for("hermes")
-        .sessions_root()
+        .sessions_root_for_profile(Some(&profile))
         .ok_or("Cannot determine Hermes home directory")?
         .join("state.db");
-    if !db_path.exists() {
-        return Ok(Vec::new());
-    }
+    discover_hermes_sessions_from_stores(project_path, cap, vec![(profile, db_path)])
+}
 
+fn discover_hermes_sessions_from_stores(
+    project_path: Option<&str>,
+    cap: usize,
+    stores: Vec<(String, PathBuf)>,
+) -> Result<Vec<ProviderDiscoveredSession>, String> {
     let project_owned = project_path.map(str::to_string);
-    let runtime = tokio::runtime::Handle::try_current().ok();
-    match runtime {
-        Some(handle) => handle.block_on(query_hermes_sessions(
-            &db_path,
-            project_owned.as_deref(),
-            cap,
-        )),
-        None => {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| format!("Hermes discover runtime: {}", e))?;
-            rt.block_on(query_hermes_sessions(
+    let mut discovered = Vec::new();
+    let mut errors = Vec::new();
+    for (profile, db_path) in stores {
+        if !db_path.exists() {
+            continue;
+        }
+        let result = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle.block_on(query_hermes_sessions(
                 &db_path,
                 project_owned.as_deref(),
                 cap,
-            ))
+            )),
+            Err(_) => {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("Hermes discover runtime: {}", e))?;
+                rt.block_on(query_hermes_sessions(
+                    &db_path,
+                    project_owned.as_deref(),
+                    cap,
+                ))
+            }
+        };
+        match result {
+            Ok(mut rows) => {
+                for row in &mut rows {
+                    row.profile = Some(profile.clone());
+                }
+                discovered.append(&mut rows);
+            }
+            Err(error) => errors.push(format!("profile {profile}: {error}")),
         }
     }
+    discovered.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    discovered.truncate(cap);
+    if discovered.is_empty() && !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    for error in errors {
+        log::warn!(target: "agent::discovery", "Hermes {}", error);
+    }
+    Ok(discovered)
 }
 
 async fn query_hermes_sessions(
@@ -1743,6 +1802,7 @@ async fn query_hermes_sessions(
             tip.started_at,
             ProviderDiscoveredSession {
                 provider: "hermes".to_string(),
+                profile: None,
                 external_session_id: tip.id,
                 project_name: project_name_from_path_opt(Some(&tip.cwd)),
                 project_path: Some(tip.cwd),
@@ -1842,6 +1902,7 @@ fn discover_gemini_sessions(project_path: &str) -> Result<Vec<ProviderDiscovered
         // sqlx/rusqlite to pull the first user message.
         sessions.push(ProviderDiscoveredSession {
             provider: "gemini".to_string(),
+            profile: None,
             external_session_id: session_id,
             project_path: None,
             project_name: None,
@@ -3679,11 +3740,13 @@ mod discovery_tests {
                 origin TEXT NOT NULL DEFAULT 'manual',
                 card_id TEXT,
                 provider TEXT NOT NULL DEFAULT 'claude',
-                binary_path TEXT
+                binary_path TEXT,
+                profile TEXT
             );
             CREATE TABLE agent_discovered_sessions (
                 id TEXT PRIMARY KEY,
                 provider TEXT NOT NULL,
+                profile TEXT NOT NULL DEFAULT '',
                 external_session_id TEXT NOT NULL,
                 project_path TEXT,
                 project_root TEXT,
@@ -3699,7 +3762,7 @@ mod discovery_tests {
                 hidden INTEGER NOT NULL DEFAULT 0,
                 hidden_at TEXT,
                 adopted_agent_session_id TEXT,
-                UNIQUE(provider, external_session_id)
+                UNIQUE(provider, profile, external_session_id)
             );",
         )
         .execute(&pool)
@@ -3779,13 +3842,13 @@ mod discovery_tests {
         std::fs::create_dir_all(&project).unwrap();
         let project_path = project.to_string_lossy().to_string();
         let tip_id = "20260618_131330_4a79f5";
-        let discovered_id = format!("hermes:{}", tip_id);
+        let discovered_id = format!("hermes:cozy-engineer:{}", tip_id);
 
         sqlx::query(
             "INSERT INTO agent_discovered_sessions (
-                id, provider, external_session_id, project_path, project_root, project_name,
+                id, provider, profile, external_session_id, project_path, project_root, project_name,
                 title, created_at, updated_at, last_seen_at, session_kind
-             ) VALUES (?, 'hermes', ?, ?, ?, 'resume-project', 'Compressed Hermes session',
+             ) VALUES (?, 'hermes', 'cozy-engineer', ?, ?, ?, 'resume-project', 'Compressed Hermes session',
                 '2026-07-24T00:00:00Z', '2026-07-24T01:00:00Z',
                 '2026-07-24T02:00:00Z', 'cli')",
         )
@@ -3801,6 +3864,7 @@ mod discovery_tests {
             .await
             .unwrap();
         assert_eq!(adopted.provider, "hermes");
+        assert_eq!(adopted.profile.as_deref(), Some("cozy-engineer"));
         assert_eq!(adopted.claude_session_id.as_deref(), Some(tip_id));
         assert_eq!(adopted.project_path, project_path);
         assert_eq!(adopted.worktree_path, None);
@@ -3869,5 +3933,76 @@ mod discovery_tests {
             .unwrap();
         assert_eq!(global_tip.project_path.as_deref(), Some("/repo"));
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn global_hermes_scan_merges_default_and_named_profile_databases() {
+        let dir = unique_test_dir("zeroany-workbench-hermes-profiles");
+        let default_db = dir.join("state.db");
+        let named_db = dir.join("profiles/cozy-engineer/state.db");
+        let broken_db = dir.join("profiles/broken/state.db");
+        std::fs::create_dir_all(named_db.parent().unwrap()).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        for (db_path, id, title, started_at) in [
+            (&default_db, "default-session", "Default session", 100.0),
+            (&named_db, "named-session", "Named session", 200.0),
+        ] {
+            runtime.block_on(async {
+                let opts = sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(db_path)
+                    .create_if_missing(true);
+                let pool = sqlx::SqlitePool::connect_with(opts).await.unwrap();
+                sqlx::raw_sql(
+                    "CREATE TABLE sessions (
+                        id TEXT PRIMARY KEY, source TEXT NOT NULL, model_config TEXT,
+                        parent_session_id TEXT, started_at REAL NOT NULL, ended_at REAL,
+                        end_reason TEXT, title TEXT, cwd TEXT,
+                        archived INTEGER NOT NULL DEFAULT 0
+                     );
+                     CREATE TABLE messages (
+                        id INTEGER PRIMARY KEY, session_id TEXT, role TEXT,
+                        content TEXT, timestamp REAL
+                     );",
+                )
+                .execute(&pool)
+                .await
+                .unwrap();
+                sqlx::query(
+                    "INSERT INTO sessions (
+                        id, source, model_config, started_at, title, cwd
+                     ) VALUES (?, 'cli', '{}', ?, ?, '/repo')",
+                )
+                .bind(id)
+                .bind(started_at)
+                .bind(title)
+                .execute(&pool)
+                .await
+                .unwrap();
+                pool.close().await;
+            });
+        }
+        drop(runtime);
+        std::fs::create_dir_all(broken_db.parent().unwrap()).unwrap();
+        std::fs::write(&broken_db, b"not a sqlite database").unwrap();
+
+        let rows = discover_hermes_sessions_from_stores(
+            None,
+            100,
+            vec![
+                ("default".into(), default_db),
+                ("broken".into(), broken_db),
+                ("cozy-engineer".into(), named_db),
+            ],
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].external_session_id, "named-session");
+        assert_eq!(rows[0].profile.as_deref(), Some("cozy-engineer"));
+        assert_eq!(rows[1].external_session_id, "default-session");
+        assert_eq!(rows[1].profile.as_deref(), Some("default"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

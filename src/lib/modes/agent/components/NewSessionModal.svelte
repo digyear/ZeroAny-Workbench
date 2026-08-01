@@ -1,6 +1,6 @@
 <script lang="ts">
   import Modal from '$lib/shared/primitives/Modal.svelte';
-  import { agentCreateSession, agentDiscoverSessions, agentListContexts, agentAttachContext, agentUpdateSessionId, agentValidateBinary, agentIsGitRepo, agentGitBranch, agentValidateWorktreeBranch } from '../commands';
+  import { agentCreateSession, agentDiscoverSessions, agentListContexts, agentAttachContext, agentUpdateSessionId, agentValidateBinary, agentIsGitRepo, agentGitBranch, agentValidateWorktreeBranch, agentListProfiles } from '../commands';
   import type { AgentContext, DiscoveredSession, AgentProvider } from '../types';
   import { AGENT_PROVIDERS } from '../types';
   import { providerStatus, providerStatusReady, refreshProviderStatus } from '$lib/shared/stores/providerStatus';
@@ -51,6 +51,8 @@
       ? ($agentFooterProvider as AgentProvider)
       : 'claude',
   );
+  let profiles = $state<string[]>([]);
+  let profile = $state('');
   let skipPermissions = $state(false);
   let customPrompt = $state('');
   let gitEnabled = $state(false);
@@ -88,6 +90,26 @@
   });
 
   let gitProbeId = 0;
+  let profileProbeId = 0;
+  async function loadProfiles(selectedProvider: AgentProvider) {
+    const probeId = ++profileProbeId;
+    try {
+      const available = await agentListProfiles(selectedProvider);
+      if (probeId !== profileProbeId || provider !== selectedProvider) return;
+      profiles = available;
+      if (!available.includes(profile)) profile = available[0] ?? '';
+    } catch (_) {
+      if (probeId === profileProbeId && provider === selectedProvider) {
+        profiles = [];
+        profile = '';
+      }
+    }
+  }
+
+  $effect(() => {
+    loadProfiles(provider);
+  });
+
   async function refreshProjectGit(path: string) {
     const probeId = ++gitProbeId;
     const trimmed = path.trim();
@@ -116,7 +138,7 @@
       // Pass the selected provider so the backend queries the right
       // session store (Claude per-project jsonl dir, Codex date-tree
       // sessions filtered by cwd, or OpenCode SQLite by directory).
-      const sessions = await agentDiscoverSessions(path, provider);
+      const sessions = await agentDiscoverSessions(path, provider, profile || undefined);
       // Filter out sessions already linked to a profile of the same
       // provider AND same project. Without the project-scope clause a
       // stale claudeSessionId on an unrelated project's row could
@@ -125,7 +147,8 @@
       const allSessions = get(agentSessions).filter(
         (s) =>
           (s.provider ?? 'claude') === provider &&
-          s.projectPath === path,
+          s.projectPath === path &&
+          (provider !== 'hermes' || (s.profile ?? null) === (profile || null)),
       );
       const linkedIds = new Set(
         allSessions.filter((s) => s.claudeSessionId).map((s) => s.claudeSessionId),
@@ -142,6 +165,7 @@
   // picker honest across provider switches.
   $effect(() => {
     const _ = provider; // dependency
+    const _profile = profile; // dependency
     if (projectPath.trim()) {
       loadDiscoveredSessions(projectPath.trim());
     } else {
@@ -262,6 +286,7 @@
         gitName: gitEnabled && gitName.trim() ? gitName.trim() : undefined,
         gitEmail: gitEnabled && gitEmail.trim() ? gitEmail.trim() : undefined,
         provider,
+        profile: provider === 'hermes' ? profile || 'default' : undefined,
         binaryPath: useCustomBinary && customBinaryPath.trim()
           ? customBinaryPath.trim()
           : undefined,
@@ -412,6 +437,17 @@
         </div>
 
         {#if activeTab === 'general'}
+          {#if profiles.length > 1}
+            <label class="ns-field">
+              <span class="ns-label">{provider === 'hermes' ? 'Hermes Profile' : 'Profile'}</span>
+              <select class="ns-select" bind:value={profile}>
+                {#each profiles as availableProfile}
+                  <option value={availableProfile}>{availableProfile}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
+
           <label class="ns-field">
             <span class="ns-label">Project Folder</span>
             <div class="ns-path-row">

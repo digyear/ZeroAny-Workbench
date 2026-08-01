@@ -465,6 +465,7 @@ async fn create_session_row(
         None,
         None,
         None,
+        None,
     )
     .await
     .map_err(|e| internal("insert session", e))?;

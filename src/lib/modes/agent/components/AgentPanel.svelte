@@ -1165,7 +1165,11 @@
       let existingSessionIds: string[] = [];
       if (!session.claudeSessionId) {
         try {
-          const existing = await agentDiscoverSessions(spawnPath, session.provider || 'claude');
+          const existing = await agentDiscoverSessions(
+            spawnPath,
+            session.provider || 'claude',
+            session.profile || undefined,
+          );
           existingSessionIds = existing.map((s: any) => s.sessionId);
         } catch (_) {}
         const claimedBySiblings = get(agentSessions)
@@ -1328,7 +1332,11 @@
             attempts++;
             if (attempts > 10 || session.claudeSessionId) { clearInterval(captureInterval); return; }
             try {
-              const allSessions = await agentDiscoverSessions(spawnPath, session.provider || 'claude');
+              const allSessions = await agentDiscoverSessions(
+                spawnPath,
+                session.provider || 'claude',
+                session.profile || undefined,
+              );
               // Re-check the "claimed by siblings" set on every poll
               // tick — a concurrently-spawning session might have
               // claimed an id since we took the snapshot at spawn
@@ -1429,6 +1437,9 @@
         // shell-quoted path in place of the bare binary name. NULL /
         // empty = standard $PATH lookup.
         binaryPath: session.binaryPath || undefined,
+        // Bind every launch (fresh, reopen, and resume) to the profile
+        // persisted when this Hermes session was created.
+        profile: session.profile || undefined,
         // Codex workspace MCP token injection is backend-owned so the
         // token doesn't have to flow through frontend IPC.
         onOutput,

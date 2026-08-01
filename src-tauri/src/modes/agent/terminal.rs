@@ -48,6 +48,8 @@ pub async fn agent_spawn_terminal(
     // `build_spawn_command` substitutes it (shell-quoted) in place of
     // the bare binary name. `None`/empty = default $PATH lookup.
     binary_path: Option<String>,
+    // Provider-native profile persisted on the session row (Hermes).
+    profile: Option<String>,
     // Legacy frontend-supplied fallback. The backend now reads the
     // persisted workspace MCP token directly from settings so token
     // injection can't be skipped by stale frontend state.
@@ -71,6 +73,7 @@ pub async fn agent_spawn_terminal(
         git_email,
         provider,
         binary_path,
+        profile,
         workspace_mcp_token,
         Some(on_output),
     )
@@ -95,6 +98,7 @@ pub(crate) async fn spawn_agent_terminal_impl(
     git_email: Option<String>,
     provider: Option<String>,
     binary_path: Option<String>,
+    profile: Option<String>,
     workspace_mcp_token: Option<String>,
     on_output: Option<Channel<TerminalOutputPayload>>,
 ) -> Result<String, String> {
@@ -139,6 +143,11 @@ pub(crate) async fn spawn_agent_terminal_impl(
         system_prompt: context_prompt,
         skip_permissions: skip_permissions.unwrap_or(false),
         binary_path_override: binary_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        profile: profile
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())

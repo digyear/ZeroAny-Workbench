@@ -25,6 +25,8 @@ export interface AgentSession {
    *  fall back to the standard $PATH lookup. Used when the user has
    *  the agent installed somewhere `find_binary` can't reach. */
   binaryPath: string | null;
+  /** Provider-native profile persisted for deterministic reopen/resume. */
+  profile: string | null;
 }
 
 /** Provider ids that map to a `CliRunner` in `runner_for`. */
@@ -64,6 +66,8 @@ export interface DiscoveredSession {
 export interface AgentDiscoveredSession {
   id: string;
   provider: AgentProvider;
+  /** Provider-native profile that owns this session (Hermes only). */
+  profile: string | null;
   externalSessionId: string;
   /** Original provider cwd; used for resume/reveal. */
   projectPath: string | null;

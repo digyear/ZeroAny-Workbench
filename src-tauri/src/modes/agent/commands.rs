@@ -22,6 +22,7 @@ pub async fn agent_create_session(
     git_name: Option<String>, git_email: Option<String>,
     provider: Option<String>,
     binary_path: Option<String>,
+    profile: Option<String>,
     base_branch: Option<String>,
     branch_name: Option<String>,
 ) -> Result<AgentSession, String> {
@@ -41,6 +42,19 @@ pub async fn agent_create_session(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
+    let profile = profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if profile.is_some() && provider != "hermes" {
+        return Err(format!("Provider '{provider}' does not support profiles"));
+    }
+    if let Some(selected) = profile {
+        let available = runner_for(&provider).profiles()?;
+        if !available.iter().any(|candidate| candidate == selected) {
+            return Err(format!("Hermes profile '{selected}' does not exist"));
+        }
+    }
     sessions_repo::insert_session(
         pool.inner(),
         &id,
@@ -56,6 +70,7 @@ pub async fn agent_create_session(
         &now,
         &provider,
         bin,
+        profile,
         base_branch.as_deref(),
         branch_name.as_deref(),
     )
@@ -76,6 +91,11 @@ pub async fn agent_create_session(
     ).await;
 
     sessions_repo::get_session_by_id(pool.inner(), &id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn agent_list_profiles(provider: String) -> Result<Vec<String>, String> {
+    runner_for(provider.trim()).profiles()
 }
 
 #[tauri::command]

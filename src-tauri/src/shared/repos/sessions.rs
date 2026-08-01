@@ -124,11 +124,12 @@ pub async fn insert_session(
     last_used_at: &str,
     provider: &str,
     binary_path: Option<&str>,
+    profile: Option<&str>,
     base_branch: Option<&str>,
     worktree_branch: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO agent_sessions (id, title, purpose, project_path, project_name, context_prompt, skip_permissions, git_name, git_email, created_at, last_used_at, provider, binary_path, base_branch, worktree_branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO agent_sessions (id, title, purpose, project_path, project_name, context_prompt, skip_permissions, git_name, git_email, created_at, last_used_at, provider, binary_path, profile, base_branch, worktree_branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id)
     .bind(title)
@@ -143,6 +144,7 @@ pub async fn insert_session(
     .bind(last_used_at)
     .bind(provider)
     .bind(binary_path)
+    .bind(profile)
     .bind(base_branch)
     .bind(worktree_branch)
     .execute(pool)
@@ -382,4 +384,46 @@ pub async fn detach_context_from_session(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn insert_and_reload_preserves_provider_profile() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::db::migrator::run(&pool).await.unwrap();
+
+        insert_session(
+            &pool,
+            "session-1",
+            "Profile session",
+            "Custom",
+            "/tmp/project",
+            "project",
+            "",
+            0,
+            None,
+            None,
+            "2026-08-01T00:00:00Z",
+            "2026-08-01T00:00:00Z",
+            "hermes",
+            None,
+            Some("work"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let session = get_session_by_id(&pool, "session-1").await.unwrap();
+        assert_eq!(session.provider, "hermes");
+        assert_eq!(session.profile.as_deref(), Some("work"));
+    }
 }

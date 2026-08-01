@@ -4,8 +4,9 @@
 // resumed with the global `--resume <session-id>` option and approvals can be
 // bypassed with `--yolo`. Project instructions live in `AGENTS.md`; Agent
 // mode writes those before spawn rather than trying to pass a system prompt.
-// Hermes stores session metadata in a single `state.db`, so discovery is
-// implemented in `modes/agent/usage.rs` and filtered by the session cwd.
+// Hermes stores session metadata in a profile-specific `state.db`, so
+// discovery is implemented in `modes/agent/usage.rs` and filtered by both the
+// selected profile and session cwd.
 
 use std::path::{Path, PathBuf};
 
@@ -25,6 +26,14 @@ impl HermesRunner {
         }
         dirs::home_dir().map(|h| h.join(".hermes"))
     }
+
+    fn profile_home(&self, profile: Option<&str>) -> Option<PathBuf> {
+        let home = self.hermes_home()?;
+        match profile.map(str::trim).filter(|p| !p.is_empty()) {
+            Some("default") | None => Some(home),
+            Some(name) => Some(home.join("profiles").join(name)),
+        }
+    }
 }
 
 fn is_safe_session_id(s: &str) -> bool {
@@ -32,6 +41,13 @@ fn is_safe_session_id(s: &str) -> bool {
     // older sources may use longer alphanumeric/underscore forms. Keep the
     // spawn boundary shell-safe without assuming a UUID-only format.
     (8..=128).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+}
+
+fn is_safe_profile_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
 }
@@ -60,6 +76,15 @@ impl CliRunner for HermesRunner {
             .map(crate::shared::cli::runner::shell_quote_path)
             .unwrap_or_else(|| BINARY.to_string());
 
+        if let Some(profile) = opts
+            .profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| is_safe_profile_name(p))
+        {
+            cmd.push_str(&format!(" --profile \"{}\"", profile));
+        }
+
         // Never splice an arbitrary persisted value into a shell command.
         // Malformed/stale ids start fresh rather than reaching the shell.
         if let Some(sid) = opts
@@ -77,6 +102,36 @@ impl CliRunner for HermesRunner {
         // spawn, so consuming the shared option here is intentional.
         let _ = &opts.system_prompt;
         cmd
+    }
+
+    fn profiles(&self) -> Result<Vec<String>, String> {
+        let home = self
+            .hermes_home()
+            .ok_or_else(|| "Cannot determine Hermes home directory".to_string())?;
+        let mut profiles = vec!["default".to_string()];
+        let profiles_dir = home.join("profiles");
+        if profiles_dir.is_dir() {
+            let entries = std::fs::read_dir(&profiles_dir)
+                .map_err(|e| format!("Cannot read Hermes profiles: {e}"))?;
+            for entry in entries.flatten() {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                if let Some(name) = entry
+                    .file_name()
+                    .to_str()
+                    .filter(|n| is_safe_profile_name(n))
+                {
+                    profiles.push(name.to_string());
+                }
+            }
+        }
+        profiles[1..].sort_unstable();
+        Ok(profiles)
+    }
+
+    fn sessions_root_for_profile(&self, profile: Option<&str>) -> Option<PathBuf> {
+        self.profile_home(profile)
     }
 
     fn home_dir(&self) -> Option<PathBuf> {
@@ -161,6 +216,30 @@ mod tests {
             HERMES.build_spawn_command(&opts(Some("20260717_183257_d25185"), true)),
             "hermes --resume \"20260717_183257_d25185\" --yolo"
         );
+    }
+
+    #[test]
+    fn binds_fresh_and_resumed_commands_to_profile() {
+        let mut fresh = opts(None, false);
+        fresh.profile = Some("cozy-engineer".into());
+        assert_eq!(
+            HERMES.build_spawn_command(&fresh),
+            "hermes --profile \"cozy-engineer\""
+        );
+
+        let mut resumed = opts(Some("20260717_183257_d25185"), true);
+        resumed.profile = Some("cozy-engineer".into());
+        assert_eq!(
+            HERMES.build_spawn_command(&resumed),
+            "hermes --profile \"cozy-engineer\" --resume \"20260717_183257_d25185\" --yolo"
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_profile_name() {
+        let mut selected = opts(None, false);
+        selected.profile = Some("bad; touch /tmp/nope".into());
+        assert_eq!(HERMES.build_spawn_command(&selected), "hermes");
     }
 
     #[test]

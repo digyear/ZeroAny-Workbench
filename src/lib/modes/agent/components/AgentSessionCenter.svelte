@@ -99,6 +99,7 @@
           session.projectRoot,
           root,
           session.provider,
+          session.profile,
         ].some((value) => (value || '').toLowerCase().includes(needle));
       })
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -411,6 +412,7 @@
                   <img src={providerIcon(session.provider)} alt="" />
                   <strong title={sessionTitle(session)}>{sessionTitle(session)}</strong>
                   <span class="sc-provider">{providerName(session.provider)}</span>
+                  {#if session.profile}<span class="sc-profile" title="Hermes profile">{session.profile}</span>{/if}
                   <span class="sc-state {rowStatus}">{rowStatus}</span>
                 </div>
                 {#if session.preview && session.preview !== session.title}<p>{session.preview}</p>{/if}
@@ -507,8 +509,9 @@
   .sc-session-title { min-width:0; display:flex; align-items:center; gap:6px; }
   .sc-session-title img { width:18px; height:18px; flex:none; object-fit:contain; }
   .sc-session-title strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11.5px; font-weight:550; }
-  .sc-provider, .sc-state { flex:none; border-radius:3px; padding:1px 4px; font-size:8px; font-weight:700; }
+  .sc-provider, .sc-profile, .sc-state { flex:none; border-radius:3px; padding:1px 4px; font-size:8px; font-weight:700; }
   .sc-provider { color:var(--t3); background:var(--n2); border:1px solid var(--b1); }
+  .sc-profile { max-width:100px; overflow:hidden; text-overflow:ellipsis; color:var(--acc); background:color-mix(in srgb, var(--acc) 10%, var(--n2)); border:1px solid color-mix(in srgb, var(--acc) 28%, var(--b1)); font-family:var(--mono); }
   .sc-state.external { color:#d29922; background:rgba(210,153,34,.12); }
   .sc-state.managed { color:#3fb950; background:rgba(63,185,80,.12); }
   .sc-state.hidden { color:var(--t4); background:var(--n2); }

@@ -39,6 +39,9 @@ pub struct SpawnOpts {
     /// to shell-quote it appropriately before splicing into the spawn
     /// command — see [`shell_quote_path`] for the canonical helper.
     pub binary_path_override: Option<String>,
+    /// Provider-native profile to use for this session. Runners without
+    /// multi-profile support ignore it.
+    pub profile: Option<String>,
     /// Hook-driven attention (Phase 1): absolute path to the ZeroAny Workbench-owned
     /// Claude `--settings` file. When set, the Claude runner appends
     /// `--settings <path>` so the agent registers our notify hooks. An
@@ -94,6 +97,18 @@ pub trait CliRunner: Send + Sync {
     /// Build the shell command string used to start (or resume) a session.
     /// The returned string is meant to be passed to `<user-shell> -l -i -c`.
     fn build_spawn_command(&self, opts: &SpawnOpts) -> String;
+
+    /// Available provider-native profiles. An empty list means this runner
+    /// does not expose multi-profile selection.
+    fn profiles(&self) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+
+    /// Session-store root for a selected provider profile. Runners without
+    /// profiles retain their normal root.
+    fn sessions_root_for_profile(&self, _profile: Option<&str>) -> Option<PathBuf> {
+        self.sessions_root()
+    }
 
     // ---- Context ------------------------------------------------------
 
