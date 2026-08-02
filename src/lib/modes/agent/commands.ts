@@ -34,6 +34,8 @@ export const agentCreateSession = (params: {
   baseBranch?: string;
   /** User-editable branch created for this session. */
   branchName?: string;
+  /** Create an isolated worktree for a fresh session in a Git repository. */
+  worktreeEnabled?: boolean;
 }) => invoke<AgentSession>('agent_create_session', params);
 export const agentUpdateSession = (params: {
   id: string;

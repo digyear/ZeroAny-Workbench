@@ -8,6 +8,7 @@
   import { Channel } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { writeText } from '@tauri-apps/plugin-clipboard-manager';
   import {
     activeAgentSession,
     agentTerminalMap,
@@ -64,6 +65,7 @@
   import { base64ToBytes, deferUntilFrame, loadWebGLAddon } from '$lib/shared/primitives/terminal-utils';
   import { getPurposePrompt } from '../ai/prompt';
   import { defaultBranchName } from '../branch-name';
+  import { copyTerminalSelection, isTerminalCopyShortcut } from '../terminal-shortcuts';
   import { AGENT_EVENT } from '$lib/shared/constants/events';
   import {
     AGENT_NOTIFY_REPEAT_MS,
@@ -583,6 +585,11 @@
     if (textarea && textarea.value) textarea.value = '';
   }
 
+  function copySelection(term: Terminal): void {
+    copyTerminalSelection(term, writeText)
+      .catch((error) => errorToast('Copy failed', error));
+  }
+
   function createTermEntry(sessionId: string): { term: Terminal; fitAddon: FitAddon; searchAddon: SearchAddon; container: HTMLDivElement; terminalId: string | null; _exitBuffer?: string } {
     const t = new Terminal({
       cursorBlink: true,
@@ -597,6 +604,7 @@
       cursorStyle: 'bar',
       cursorInactiveStyle: 'outline',
       rightClickSelectsWord: true,
+      macOptionClickForcesSelection: true,
     });
     const fa = new FitAddon();
     const sa = new SearchAddon();
@@ -616,6 +624,10 @@
     });
 
     t.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if (isTerminalCopyShortcut(e)) {
+        copySelection(t);
+        return false;
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === 'f' && e.type === 'keydown') {
         openTermFind();
         return false;
@@ -733,6 +745,7 @@
       cursorStyle: 'bar',
       cursorInactiveStyle: 'outline',
       rightClickSelectsWord: true,
+      macOptionClickForcesSelection: true,
     });
     const fa = new FitAddon();
     const sa = new SearchAddon();
@@ -752,6 +765,10 @@
     });
 
     t.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if (isTerminalCopyShortcut(e)) {
+        copySelection(t);
+        return false;
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === 'f' && e.type === 'keydown') {
         openShellFind();
         return false;
@@ -1101,7 +1118,7 @@
       // used only for the internal worktree directory so it never pollutes
       // merge history. Legacy rows without branch metadata fall back to a
       // readable title slug and the project root's current branch.
-      if (!session.worktreePath && !session.claudeSessionId) {
+      if (session.worktreeEnabled !== 0 && !session.worktreePath && !session.claudeSessionId) {
         const isGit = await agentIsGitRepo(session.projectPath);
         if (isGit) {
           const branchName = session.worktreeBranch || defaultBranchName(session.title);

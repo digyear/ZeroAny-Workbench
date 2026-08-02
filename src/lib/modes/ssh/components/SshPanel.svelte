@@ -6,6 +6,7 @@
   import { SearchAddon } from '@xterm/addon-search';
   import '@xterm/xterm/css/xterm.css';
   import { Channel } from '@tauri-apps/api/core';
+  import { writeText } from '@tauri-apps/plugin-clipboard-manager';
   import {
     activeSshProfile,
     sshProfiles,
@@ -33,6 +34,7 @@
   import type { SshProfile, SshTerminalPayload } from '../types';
   import { SSH_EVENT } from '$lib/shared/constants/events';
   import { RESIZE_DEBOUNCE_MS, SSH_CAPTURE_TIMEOUT_MS } from '$lib/shared/constants/timings';
+  import { copyTerminalSelection, isTerminalCopyShortcut } from '$lib/modes/agent/terminal-shortcuts';
 
   let terminalEl: HTMLDivElement;
 
@@ -240,6 +242,7 @@
       cursorStyle: 'bar',
       cursorInactiveStyle: 'outline',
       rightClickSelectsWord: true,
+      macOptionClickForcesSelection: true,
     });
     const fitAddon = new FitAddon();
     const searchAddon = new SearchAddon();
@@ -254,6 +257,11 @@
 
     // Intercept Cmd/Ctrl+F before xterm handles it, and Escape to close the bar.
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if (isTerminalCopyShortcut(e)) {
+        copyTerminalSelection(term, writeText)
+          .catch(() => showToast('Copy failed', 'error'));
+        return false;
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === 'f' && e.type === 'keydown') {
         openFind();
         return false;

@@ -9,6 +9,8 @@ export interface AgentSession {
   worktreePath: string | null;
   worktreeBranch: string | null;
   baseBranch: string | null;
+  /** Whether a fresh Git session should create an isolated worktree. */
+  worktreeEnabled: number;
   skipPermissions: number;
   gitName: string | null;
   gitEmail: string | null;

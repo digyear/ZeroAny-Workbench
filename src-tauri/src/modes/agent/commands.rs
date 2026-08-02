@@ -25,6 +25,7 @@ pub async fn agent_create_session(
     profile: Option<String>,
     base_branch: Option<String>,
     branch_name: Option<String>,
+    worktree_enabled: Option<bool>,
 ) -> Result<AgentSession, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -73,6 +74,7 @@ pub async fn agent_create_session(
         profile,
         base_branch.as_deref(),
         branch_name.as_deref(),
+        if worktree_enabled.unwrap_or(true) { 1 } else { 0 },
     )
     .await
     .map_err(|e| e.to_string())?;

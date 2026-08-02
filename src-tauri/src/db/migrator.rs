@@ -77,6 +77,23 @@ mod tests {
         .unwrap();
         assert_eq!(profile_count, 1);
 
+        let worktree_enabled_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('agent_sessions') \
+             WHERE name = 'worktree_enabled'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(worktree_enabled_count, 1);
+        let worktree_enabled_default: String = sqlx::query_scalar(
+            "SELECT dflt_value FROM pragma_table_info('agent_sessions') \
+             WHERE name = 'worktree_enabled'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(worktree_enabled_default, "1");
+
         let discovered_profile_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('agent_discovered_sessions') \
              WHERE name = 'profile'",

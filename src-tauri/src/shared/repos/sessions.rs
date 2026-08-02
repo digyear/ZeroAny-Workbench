@@ -127,9 +127,10 @@ pub async fn insert_session(
     profile: Option<&str>,
     base_branch: Option<&str>,
     worktree_branch: Option<&str>,
+    worktree_enabled: i32,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO agent_sessions (id, title, purpose, project_path, project_name, context_prompt, skip_permissions, git_name, git_email, created_at, last_used_at, provider, binary_path, profile, base_branch, worktree_branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO agent_sessions (id, title, purpose, project_path, project_name, context_prompt, skip_permissions, git_name, git_email, created_at, last_used_at, provider, binary_path, profile, base_branch, worktree_branch, worktree_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id)
     .bind(title)
@@ -147,6 +148,7 @@ pub async fn insert_session(
     .bind(profile)
     .bind(base_branch)
     .bind(worktree_branch)
+    .bind(worktree_enabled)
     .execute(pool)
     .await?;
     Ok(())
@@ -418,6 +420,7 @@ mod tests {
             Some("work"),
             None,
             None,
+            0,
         )
         .await
         .unwrap();
@@ -425,5 +428,6 @@ mod tests {
         let session = get_session_by_id(&pool, "session-1").await.unwrap();
         assert_eq!(session.provider, "hermes");
         assert_eq!(session.profile.as_deref(), Some("work"));
+        assert_eq!(session.worktree_enabled, 0);
     }
 }

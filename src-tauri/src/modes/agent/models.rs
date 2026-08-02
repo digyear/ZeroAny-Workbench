@@ -27,6 +27,9 @@ pub struct AgentSession {
     /// Branch/ref used as the starting point when the lazy worktree is created.
     /// For new manual sessions this is the project root's current branch.
     pub base_branch: Option<String>,
+    /// Whether a fresh session in a Git repository should lazily create an
+    /// isolated worktree. Existing rows default to enabled.
+    pub worktree_enabled: i32,
     pub skip_permissions: i32,
     pub git_name: Option<String>,
     pub git_email: Option<String>,

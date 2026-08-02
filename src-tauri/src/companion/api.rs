@@ -416,6 +416,7 @@ struct NewAgentSession {
     project_path: String,
     provider: String,
     title: Option<String>,
+    worktree_enabled: Option<bool>,
 }
 
 fn project_name_from_path(path: &str) -> String {
@@ -466,6 +467,7 @@ async fn create_session_row(
         None,
         None,
         None,
+        if new.worktree_enabled.unwrap_or(true) { 1 } else { 0 },
     )
     .await
     .map_err(|e| internal("insert session", e))?;

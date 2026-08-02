@@ -42,6 +42,7 @@
   let baseBranch = $state('');
   let branchName = $state('');
   let branchNameEdited = $state(false);
+  let worktreeEnabled = $state(true);
   // Which CLI backs this session. Defaults to the footer-selected provider
   // (whichever the user last looked at usage for) so the typical
   // "open another session in the same CLI" flow is one click. Coerced to
@@ -265,7 +266,7 @@
       const gitProject = await agentIsGitRepo(projectPath.trim());
       let selectedBaseBranch: string | undefined;
       let selectedBranchName: string | undefined;
-      if (gitProject) {
+      if (gitProject && worktreeEnabled) {
         selectedBaseBranch = baseBranch || await agentGitBranch(projectPath.trim());
         selectedBranchName = branchName.trim() || defaultBranchName(title);
         if (!selectedBaseBranch || selectedBaseBranch === 'HEAD') {
@@ -292,6 +293,7 @@
           : undefined,
         baseBranch: selectedBaseBranch,
         branchName: selectedBranchName,
+        worktreeEnabled,
       });
 
       // Persist the selected provider session id, and update the in-memory
@@ -336,7 +338,7 @@
 
   function resetForm() {
     projectPath = ''; title = ''; purpose = ''; skipPermissions = false;
-    isGitProject = false; baseBranch = ''; branchName = ''; branchNameEdited = false;
+    isGitProject = false; baseBranch = ''; branchName = ''; branchNameEdited = false; worktreeEnabled = true;
     customPrompt = ''; gitEnabled = false; gitName = ''; gitEmail = '';
     discoveredSessions = []; selectedSessionId = '';
     contextEnabled = false; attachedContextNames = []; showContextDropdown = false;
@@ -350,7 +352,7 @@
     projectPath.trim() !== '' &&
     title.trim() !== '' &&
     purpose !== '' &&
-    (!isGitProject || (baseBranch.trim() !== '' && branchName.trim() !== '')) &&
+    (!isGitProject || !worktreeEnabled || (baseBranch.trim() !== '' && branchName.trim() !== '')) &&
     (!gitEnabled || (gitName.trim() !== '' && gitEmail.trim() !== ''))
   );
 </script>
@@ -471,22 +473,44 @@
           </label>
 
           {#if isGitProject}
-            <div class="ns-row">
-              <label class="ns-field">
-                <span class="ns-label">Base Branch</span>
-                <input class="ns-input" type="text" value={baseBranch} readonly title="Current branch in the project folder" />
-              </label>
-              <label class="ns-field">
-                <span class="ns-label">Branch Name</span>
-                <input
-                  class="ns-input"
-                  type="text"
-                  value={branchName}
-                  placeholder="e.g. feature/auth-refactor"
-                  oninput={(event) => { branchName = event.currentTarget.value; branchNameEdited = true; }}
-                />
-              </label>
+            <div class="ns-worktree-option">
+              <div class="ns-worktree-info">
+                <span class="ns-worktree-title">Create isolated worktree</span>
+                <span class="ns-worktree-desc">Run this session on its own branch instead of modifying the project folder directly</span>
+              </div>
+              <button
+                class="ns-toggle"
+                class:on={worktreeEnabled}
+                type="button"
+                aria-label="Create isolated worktree"
+                aria-pressed={worktreeEnabled}
+                onclick={() => worktreeEnabled = !worktreeEnabled}
+              >
+                <span class="ns-toggle-knob"></span>
+              </button>
             </div>
+            {#if worktreeEnabled}
+              <div class="ns-row">
+                <label class="ns-field">
+                  <span class="ns-label">Base Branch</span>
+                  <input class="ns-input" type="text" value={baseBranch} readonly title="Current branch in the project folder" />
+                </label>
+                <label class="ns-field">
+                  <span class="ns-label">Branch Name</span>
+                  <input
+                    class="ns-input"
+                    type="text"
+                    value={branchName}
+                    placeholder="e.g. feature/auth-refactor"
+                    oninput={(event) => { branchName = event.currentTarget.value; branchNameEdited = true; }}
+                  />
+                </label>
+              </div>
+            {:else}
+              <div class="ns-worktree-warning">
+                Multiple sessions using this project folder share the same files. Concurrent edits may overwrite or conflict with each other.
+              </div>
+            {/if}
           {/if}
 
           <div class="ns-field">
@@ -845,6 +869,21 @@
     min-width: 0;
   }
   .ns-field { display: flex; flex-direction: column; gap: 6px; }
+  .ns-worktree-option {
+    display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+    border: 1px solid var(--b1); border-radius: 8px;
+    background: color-mix(in srgb, var(--e) 25%, transparent);
+  }
+  .ns-worktree-info { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ns-worktree-title { font-size: 12px; font-weight: 600; color: var(--t1); font-family: var(--ui); }
+  .ns-worktree-desc { font-size: 11px; line-height: 1.35; color: var(--t3); font-family: var(--ui); }
+  .ns-worktree-warning {
+    margin-top: -4px; padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--warn, #f4c150) 35%, transparent);
+    border-radius: 7px;
+    background: color-mix(in srgb, var(--warn, #f4c150) 8%, transparent);
+    color: var(--t2); font-size: 11px; line-height: 1.4; font-family: var(--ui);
+  }
 
   /* Binary-probe inline status — neutral / green / amber. Lives inside
      the same ns-adv-body block as the path input. */
