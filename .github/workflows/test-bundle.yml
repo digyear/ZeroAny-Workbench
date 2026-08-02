@@ -181,7 +181,7 @@ jobs:
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: clauge-${{ matrix.label }}
+          name: zeroany-workbench-${{ matrix.label }}
           path: |
             src-tauri/target/**/release/bundle/dmg/*.dmg
             src-tauri/target/**/release/bundle/macos/*.app.tar.gz
