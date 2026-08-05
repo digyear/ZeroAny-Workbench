@@ -16,6 +16,9 @@ pub struct AgentSession {
     pub title: String,
     pub purpose: String,
     pub project_path: String,
+    /// Stable main-repository identity used for grouping. `project_path`
+    /// remains the actual cwd so externally created worktrees resume safely.
+    pub project_root: Option<String>,
     pub project_name: String,
     /// Provider-native resume id. The column keeps its legacy Claude-era
     /// name for migration compatibility, but stores Codex/OpenCode/Hermes

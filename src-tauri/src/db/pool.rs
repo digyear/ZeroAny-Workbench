@@ -31,6 +31,9 @@ pub async fn init(app_data_dir: &Path) -> Result<SqlitePool, String> {
 
     let opts = SqliteConnectOptions::from_str(&url)
         .map_err(|e| format!("invalid db url {}: {}", url, e))?
+        .pragma("journal_mode", "WAL")
+        .pragma("synchronous", "NORMAL")
+        .pragma("busy_timeout", "5000")
         .pragma("foreign_keys", "ON")
         .create_if_missing(true);
 

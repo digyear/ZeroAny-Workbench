@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import { agentSessions, activeAgentSession, agentContextUsage, agentSessionActivity, agentSessionAwaiting, agentDiscoveredSessions, agentSessionCenterOpen, loadAgentDiscoveredSessions, scanAgentDiscoveredSessions, loadAgentSessions } from '../stores';
   import { mode } from '$lib/stores/app';
   import { showContextMenu } from '$lib/shared/primitives/contextmenu';
@@ -96,7 +96,6 @@
 
   let discoveredScanning = $state(false);
   let discoveredActionIds = $state<string[]>([]);
-  let discoveredTimer: ReturnType<typeof setInterval> | null = null;
 
   function providerName(provider: string): string {
     return PROVIDER_INSTALL_INFO[provider as AgentProvider]?.name ?? provider;
@@ -166,25 +165,18 @@
 
   onMount(() => {
     void refreshDiscovered(true);
-    discoveredTimer = setInterval(() => {
-      if (get(mode) === 'agent') void refreshDiscovered(true);
-    }, 60_000);
-  });
-
-  onDestroy(() => {
-    if (discoveredTimer) clearInterval(discoveredTimer);
   });
 
   const groupedByProject = $derived.by(() => {
-    const groups = new Map<string, AgentSession[]>();
+    const groups = new Map<string, { name: string; sessions: AgentSession[] }>();
     for (const s of filteredSessions) {
-      const key = s.projectName || 'Untitled';
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(s);
+      const key = s.projectRoot || s.projectPath || s.projectName || 'Untitled';
+      if (!groups.has(key)) groups.set(key, { name: s.projectName || 'Untitled', sessions: [] });
+      groups.get(key)!.sessions.push(s);
     }
     // Sort sessions within each group by lastUsedAt descending
-    for (const [, sessions] of groups) {
-      sessions.sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt));
+    for (const [, group] of groups) {
+      group.sessions.sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt));
     }
     return groups;
   });
@@ -334,21 +326,21 @@
       {/if}
     </div>
   {:else}
-    {#each [...groupedByProject] as [projectName, sessions] (projectName)}
-      {@const isCollapsed = collapsedProjects.has(projectName)}
+    {#each [...groupedByProject] as [projectKey, group] (projectKey)}
+      {@const isCollapsed = collapsedProjects.has(projectKey)}
       <div class="ncoll">
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="ncoll-hdr" onclick={() => toggleProject(projectName)}>
+        <div class="ncoll-hdr" onclick={() => toggleProject(projectKey)}>
           <div class="coll-icon coll-icon-accent">
             <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           </div>
           <div class="ncoll-text">
             <div class="ncoll-row-top">
-              <span class="ncoll-name">{projectName}</span>
+              <span class="ncoll-name">{group.name}</span>
             </div>
             <div class="ncoll-row-bot">
-              <span class="ncoll-sub">{sessions.length} session{sessions.length === 1 ? '' : 's'}</span>
+              <span class="ncoll-sub">{group.sessions.length} session{group.sessions.length === 1 ? '' : 's'}</span>
             </div>
           </div>
           <svg class="ncoll-arr" class:open={!isCollapsed} viewBox="0 0 24 24">
@@ -357,7 +349,7 @@
         </div>
 
       {#if !isCollapsed}
-        {#each sessions as session (session.id)}
+        {#each group.sessions as session (session.id)}
           {@const pct = contextPercent(session.id)}
           {@const activity = activityStatus(session.id)}
           {@const awaiting = isAwaiting(session.id)}

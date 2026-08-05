@@ -1,11 +1,17 @@
+import type { Platform } from '$lib/utils/platform';
+
 export interface TerminalSelection {
   hasSelection(): boolean;
   getSelection(): string;
 }
 
-export function isTerminalCopyShortcut(event: KeyboardEvent): boolean {
+export function isTerminalCopyShortcut(event: KeyboardEvent, platform: Platform): boolean {
   if (event.type !== 'keydown' || event.key.toLowerCase() !== 'c') return false;
-  return event.metaKey || (event.ctrlKey && event.shiftKey);
+  if (event.altKey) return false;
+  if (platform === 'macos') {
+    return event.metaKey && !event.ctrlKey && !event.shiftKey;
+  }
+  return event.ctrlKey && event.shiftKey && !event.metaKey;
 }
 
 export async function copyTerminalSelection(

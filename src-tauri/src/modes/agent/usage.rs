@@ -1,5 +1,5 @@
 use crate::modes::agent::models::*;
-use crate::modes::agent::worktree::resolve_project_root;
+use crate::modes::agent::worktree::resolve_project_identity;
 use crate::shared::cli::{registry::runner_for, runner::CliRunner};
 use crate::shared::repos::discovered_sessions as discovered_repo;
 use sqlx::SqlitePool;
@@ -627,16 +627,23 @@ fn discover_sessions_global(
     Ok((out, errors))
 }
 
-pub async fn scan_discovered_sessions_into_catalog(
+async fn upsert_discovered_sessions_into_catalog(
     pool: &SqlitePool,
-    provider: Option<&str>,
+    discovered: Vec<ProviderDiscoveredSession>,
+    mut errors: Vec<String>,
 ) -> Result<DiscoveredSessionScanSummary, String> {
-    let provider_owned = provider.map(str::to_string);
-    let (discovered, mut errors) = tauri::async_runtime::spawn_blocking(move || {
-        discover_sessions_global(provider_owned.as_deref())
-    })
-    .await
-    .map_err(|e| format!("discovery thread: {}", e))??;
+    // 如果扫描完全失败（没有任何发现且有错误），清空 catalog
+    if discovered.is_empty() && !errors.is_empty() {
+        sqlx::query("DELETE FROM agent_discovered_sessions")
+            .execute(pool)
+            .await
+            .map_err(|e| format!("Failed to clear catalog: {}", e))?;
+        return Ok(DiscoveredSessionScanSummary {
+            scanned: 0,
+            upserted: 0,
+            errors,
+        });
+    }
 
     let now = chrono::Utc::now().to_rfc3339();
     let scanned = discovered.len();
@@ -649,40 +656,132 @@ pub async fn scan_discovered_sessions_into_catalog(
         .filter(|path| !path.is_empty())
         .map(str::to_string)
         .collect::<HashSet<_>>();
-    let project_roots = tauri::async_runtime::spawn_blocking(move || {
+    let project_identities = tauri::async_runtime::spawn_blocking(move || {
         project_paths
             .into_iter()
             .map(|path| {
-                let root = resolve_project_root(&path);
-                (path, root)
+                let identity = resolve_project_identity(&path);
+                (path, identity)
             })
             .collect::<HashMap<_, _>>()
     })
     .await
     .map_err(|e| format!("project root resolution thread: {e}"))?;
+
+    // 批量事务：一次性 upsert 所有发现的 sessions，避免 394 次独立提交
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     let mut upserted = 0;
+
     for item in discovered {
-        let project_root = item
+        let project_identity = item
             .project_path
             .as_deref()
-            .and_then(|path| project_roots.get(path.trim()))
+            .and_then(|path| project_identities.get(path.trim()))
             .cloned();
-        if let Err(e) = discovered_repo::upsert_discovered_session(
-            pool,
-            &item.into_upsert(&now, project_root),
-        )
-        .await
-        {
-            errors.push(format!("catalog upsert: {}", e));
-            continue;
+        let mut upsert = item.into_upsert(
+            &now,
+            project_identity.as_ref().map(|identity| identity.project_root.clone()),
+        );
+        if let Some(identity) = project_identity {
+            upsert.project_name = Some(identity.project_name);
         }
-        upserted += 1;
+
+        let profile = if upsert.provider == "hermes" {
+            upsert.profile
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("default")
+        } else {
+            ""
+        };
+        let id = if profile.is_empty() {
+            format!("{}:{}", upsert.provider, upsert.external_session_id)
+        } else {
+            format!("{}:{}:{}", upsert.provider, profile, upsert.external_session_id)
+        };
+        let created_at = upsert
+            .created_at
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(&upsert.last_seen_at);
+        let updated_at = upsert
+            .updated_at
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(&upsert.last_seen_at);
+
+        let result = sqlx::query(
+            "INSERT INTO agent_discovered_sessions (
+                id, provider, profile, external_session_id, project_path, project_root, project_name,
+                title, preview, created_at, updated_at, last_seen_at,
+                parent_external_session_id, session_kind, source_path
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(provider, profile, external_session_id) DO UPDATE SET
+                project_path = COALESCE(excluded.project_path, agent_discovered_sessions.project_path),
+                project_root = CASE
+                    WHEN agent_discovered_sessions.project_root IS NOT NULL
+                     AND agent_discovered_sessions.project_root != agent_discovered_sessions.project_path
+                     AND excluded.project_root = excluded.project_path
+                    THEN agent_discovered_sessions.project_root
+                    ELSE COALESCE(excluded.project_root, agent_discovered_sessions.project_root)
+                END,
+                project_name = COALESCE(excluded.project_name, agent_discovered_sessions.project_name),
+                title = COALESCE(excluded.title, agent_discovered_sessions.title),
+                preview = COALESCE(excluded.preview, agent_discovered_sessions.preview),
+                updated_at = CASE
+                    WHEN excluded.updated_at > agent_discovered_sessions.updated_at THEN excluded.updated_at
+                    ELSE agent_discovered_sessions.updated_at
+                END,
+                last_seen_at = excluded.last_seen_at,
+                parent_external_session_id = COALESCE(excluded.parent_external_session_id, agent_discovered_sessions.parent_external_session_id),
+                session_kind = COALESCE(excluded.session_kind, agent_discovered_sessions.session_kind),
+                source_path = COALESCE(excluded.source_path, agent_discovered_sessions.source_path)",
+        )
+        .bind(&id)
+        .bind(&upsert.provider)
+        .bind(profile)
+        .bind(&upsert.external_session_id)
+        .bind(&upsert.project_path)
+        .bind(&upsert.project_root)
+        .bind(&upsert.project_name)
+        .bind(&upsert.title)
+        .bind(&upsert.preview)
+        .bind(created_at)
+        .bind(updated_at)
+        .bind(&upsert.last_seen_at)
+        .bind(&upsert.parent_external_session_id)
+        .bind(&upsert.session_kind)
+        .bind(&upsert.source_path)
+        .execute(&mut *tx)
+        .await;
+
+        match result {
+            Ok(_) => upserted += 1,
+            Err(e) => errors.push(format!("catalog upsert: {}", e)),
+        }
     }
+
+    tx.commit().await.map_err(|e| e.to_string())?;
+
     Ok(DiscoveredSessionScanSummary {
         scanned,
         upserted,
         errors,
     })
+}
+
+pub async fn scan_discovered_sessions_into_catalog(
+    pool: &SqlitePool,
+    provider: Option<&str>,
+) -> Result<DiscoveredSessionScanSummary, String> {
+    let provider_owned = provider.map(str::to_string);
+    let (discovered, errors) = tauri::async_runtime::spawn_blocking(move || {
+        discover_sessions_global(provider_owned.as_deref())
+    })
+    .await
+    .map_err(|e| format!("discovery thread: {}", e))??;
+    upsert_discovered_sessions_into_catalog(pool, discovered, errors).await
 }
 
 #[tauri::command]
@@ -832,16 +931,17 @@ pub async fn adopt_discovered_session_by_id(
 
         sqlx::query(
             "INSERT INTO agent_sessions (
-                id, title, purpose, project_path, project_name, claude_session_id,
+                id, title, purpose, project_path, project_root, project_name, claude_session_id,
                 context_prompt, skip_permissions, git_name, git_email,
                 created_at, last_used_at, origin, provider, binary_path,
                 profile, base_branch, worktree_branch
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)",
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)",
         )
         .bind(&session_id)
         .bind(&title)
         .bind("External")
         .bind(project_path)
+        .bind(discovered.project_root.as_deref())
         .bind(&project_name)
         .bind(&discovered.external_session_id)
         .bind("")
@@ -1173,6 +1273,7 @@ fn discover_codex_sessions(project_path: &str) -> Result<Vec<ProviderDiscoveredS
         Some(project_path),
         &mut sessions,
         GLOBAL_SCAN_FILE_CAP,
+        0,
     );
     sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(sessions)
@@ -1187,19 +1288,23 @@ fn discover_codex_sessions_global(cap: usize) -> Result<Vec<ProviderDiscoveredSe
     }
 
     let mut sessions = Vec::new();
-    walk_codex_sessions(&root, None, &mut sessions, GLOBAL_SCAN_FILE_CAP);
+    walk_codex_sessions(&root, None, &mut sessions, GLOBAL_SCAN_FILE_CAP, 0);
     sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     sessions.truncate(cap);
     Ok(sessions)
 }
 
+/// Walk Codex session directories with depth limit.
+/// Codex structure: sessions/YYYY/MM/DD/*.jsonl (max depth 4 from sessions root)
 fn walk_codex_sessions(
     dir: &std::path::Path,
     project_path: Option<&str>,
     out: &mut Vec<ProviderDiscoveredSession>,
     file_cap: usize,
+    depth: usize,
 ) {
-    if out.len() >= file_cap {
+    // Prevent infinite recursion - Codex uses YYYY/MM/DD structure (depth 3-4)
+    if depth > 4 || out.len() >= file_cap {
         return;
     }
     let entries = match fs::read_dir(dir) {
@@ -1213,7 +1318,7 @@ fn walk_codex_sessions(
             Err(_) => continue,
         };
         if ft.is_dir() {
-            walk_codex_sessions(&path, project_path, out, file_cap);
+            walk_codex_sessions(&path, project_path, out, file_cap, depth + 1);
             continue;
         }
         if !path
@@ -3726,12 +3831,14 @@ mod discovery_tests {
                 title TEXT NOT NULL,
                 purpose TEXT NOT NULL,
                 project_path TEXT NOT NULL,
+                project_root TEXT,
                 project_name TEXT NOT NULL,
                 claude_session_id TEXT,
                 context_prompt TEXT NOT NULL DEFAULT '',
                 worktree_path TEXT,
                 worktree_branch TEXT,
                 base_branch TEXT,
+                worktree_enabled INTEGER NOT NULL DEFAULT 1,
                 skip_permissions INTEGER NOT NULL DEFAULT 0,
                 git_name TEXT,
                 git_email TEXT,
@@ -3772,6 +3879,89 @@ mod discovery_tests {
     }
 
     #[tokio::test]
+    async fn catalog_groups_linked_worktree_under_main_repository() {
+        let pool = adoption_test_pool().await;
+        let project = unique_test_dir("zeroany-workbench-catalog-project");
+        let worktree = unique_test_dir("zeroany-workbench-catalog-worktree");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let run_git = |cwd: &std::path::Path, args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run_git(&project, &["init", "-b", "dev"]);
+        run_git(&project, &["config", "user.name", "ZeroAny Test"]);
+        run_git(&project, &["config", "user.email", "test@zeroany.invalid"]);
+        std::fs::write(project.join("README.md"), "initial\n").unwrap();
+        run_git(&project, &["add", "README.md"]);
+        run_git(&project, &["commit", "-m", "initial"]);
+        run_git(
+            &project,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "catalog-linked",
+                worktree.to_str().unwrap(),
+            ],
+        );
+
+        let worktree_path = worktree.to_string_lossy().to_string();
+        let summary = upsert_discovered_sessions_into_catalog(
+            &pool,
+            vec![ProviderDiscoveredSession {
+                provider: "codex".to_string(),
+                profile: None,
+                external_session_id: "catalog-linked-session".to_string(),
+                project_path: Some(worktree_path.clone()),
+                project_name: Some("zeroany-workbench-catalog-worktree".to_string()),
+                title: Some("Linked worktree session".to_string()),
+                preview: None,
+                created_at: Some("2026-08-03T00:00:00Z".to_string()),
+                updated_at: Some("2026-08-03T00:00:00Z".to_string()),
+                parent_external_session_id: None,
+                session_kind: Some("conversation".to_string()),
+                source_path: None,
+            }],
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(summary.upserted, 1);
+
+        let discovered = discovered_repo::get_by_provider_profile_external(
+            &pool,
+            "codex",
+            "",
+            "catalog-linked-session",
+        )
+        .await
+        .unwrap();
+        assert_eq!(discovered.project_path.as_deref(), Some(worktree_path.as_str()));
+        assert_eq!(
+            discovered.project_root.as_deref(),
+            Some(project.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            discovered.project_name.as_deref(),
+            project.file_name().and_then(|name| name.to_str())
+        );
+
+        let _ = std::fs::remove_dir_all(worktree);
+        let _ = std::fs::remove_dir_all(project);
+    }
+
+    #[tokio::test]
     async fn adopting_discovered_session_is_idempotent_and_preserves_resume_identity() {
         let pool = adoption_test_pool().await;
         let project = unique_test_dir("zeroany-workbench-adoption-project");
@@ -3809,6 +3999,7 @@ mod discovery_tests {
         assert_eq!(first.claude_session_id.as_deref(), Some("resume-codex-1"));
         assert_eq!(first.origin, "manual");
         assert_eq!(first.project_path, worktree_path);
+        assert_eq!(first.project_root.as_deref(), Some(project_path.as_str()));
         assert_eq!(
             first.project_name,
             project.file_name().unwrap().to_string_lossy()

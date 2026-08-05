@@ -32,3 +32,16 @@ vite.config.ts.timestamp-*
 .*.node-gyp/
 CLAUDE.md
 .clauge-worktrees/
+
+# IDE
+.idea/
+
+# Build artifacts
+artifacts/
+
+# Package lock (bun.lock is the source of truth)
+package-lock.json
+
+# Local build helpers
+Dockerfile.build
+docker-compose.build.yml

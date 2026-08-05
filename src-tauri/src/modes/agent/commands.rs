@@ -1,17 +1,53 @@
 use crate::modes::agent::models::{AgentContext, AgentSession};
+use crate::modes::agent::worktree::resolve_project_identity;
 use crate::shared::cli::{registry::runner_for, runner::CliRunner};
 use crate::shared::repos::sessions as sessions_repo;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::path::PathBuf;
-use tauri::{Manager, State};
-
-fn project_name_from_path(path: &str) -> String {
-    std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or("Unknown").to_string()
-}
+use tauri::State;
 
 #[tauri::command]
 pub async fn agent_list_sessions(pool: State<'_, SqlitePool>) -> Result<Vec<AgentSession>, String> {
-    sessions_repo::list_sessions(pool.inner()).await.map_err(|e| e.to_string())
+    let mut sessions = sessions_repo::list_sessions(pool.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    let paths = sessions
+        .iter()
+        .map(|session| session.project_path.clone())
+        .collect::<Vec<_>>();
+    let identities = tokio::task::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .map(|path| {
+                let identity = resolve_project_identity(&path);
+                (path, identity)
+            })
+            .collect::<HashMap<_, _>>()
+    })
+    .await
+    .map_err(|error| format!("Project identity resolution failed: {error}"))?;
+
+    for session in &mut sessions {
+        let Some(identity) = identities.get(&session.project_path) else {
+            continue;
+        };
+        if session.project_root.as_deref() != Some(&identity.project_root)
+            || session.project_name != identity.project_name
+        {
+            sessions_repo::update_session_project_identity(
+                pool.inner(),
+                &session.id,
+                &identity.project_root,
+                &identity.project_name,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            session.project_root = Some(identity.project_root.clone());
+            session.project_name = identity.project_name.clone();
+        }
+    }
+    Ok(sessions)
 }
 
 #[tauri::command]
@@ -27,9 +63,13 @@ pub async fn agent_create_session(
     branch_name: Option<String>,
     worktree_enabled: Option<bool>,
 ) -> Result<AgentSession, String> {
+    let project_path = project_path.trim().to_string();
+    let identity_path = project_path.clone();
+    let identity = tokio::task::spawn_blocking(move || resolve_project_identity(&identity_path))
+        .await
+        .map_err(|error| format!("Project identity resolution failed: {error}"))?;
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    let project_name = project_name_from_path(&project_path);
     let context_prompt = custom_prompt.unwrap_or_default();
     let skip = if skip_permissions.unwrap_or(false) { 1 } else { 0 };
     // Default to Claude when the frontend doesn't pass a provider —
@@ -62,7 +102,8 @@ pub async fn agent_create_session(
         &title,
         &purpose,
         &project_path,
-        &project_name,
+        Some(&identity.project_root),
+        &identity.project_name,
         &context_prompt,
         skip,
         git_name.as_deref(),
@@ -72,9 +113,9 @@ pub async fn agent_create_session(
         &provider,
         bin,
         profile,
-        base_branch.as_deref(),
-        branch_name.as_deref(),
-        if worktree_enabled.unwrap_or(true) { 1 } else { 0 },
+        if identity.is_linked_worktree { None } else { base_branch.as_deref() },
+        if identity.is_linked_worktree { None } else { branch_name.as_deref() },
+        if worktree_enabled.unwrap_or(true) && !identity.is_linked_worktree { 1 } else { 0 },
     )
     .await
     .map_err(|e| e.to_string())?;

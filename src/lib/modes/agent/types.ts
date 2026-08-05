@@ -3,6 +3,8 @@ export interface AgentSession {
   title: string;
   purpose: string;
   projectPath: string;
+  /** Stable main repository root used for project grouping. */
+  projectRoot: string | null;
   projectName: string;
   claudeSessionId: string | null;
   contextPrompt: string;

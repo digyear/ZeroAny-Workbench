@@ -49,6 +49,7 @@ pub async fn insert_hidden_session(
     id: &str,
     title: &str,
     project_path: &str,
+    project_root: Option<&str>,
     project_name: &str,
     card_id: &str,
     coworker_id: &str,
@@ -58,14 +59,15 @@ pub async fn insert_hidden_session(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO agent_sessions \
-         (id, title, purpose, project_path, project_name, context_prompt, \
+         (id, title, purpose, project_path, project_root, project_name, context_prompt, \
           skip_permissions, git_name, git_email, created_at, last_used_at, \
           origin, card_id, coworker_id, provider) \
-         VALUES (?, ?, '', ?, ?, '', 0, NULL, NULL, ?, ?, 'card', ?, ?, ?)",
+         VALUES (?, ?, '', ?, ?, ?, '', 0, NULL, NULL, ?, ?, 'card', ?, ?, ?)",
     )
     .bind(id)
     .bind(title)
     .bind(project_path)
+    .bind(project_root)
     .bind(project_name)
     .bind(created_at)
     .bind(last_used_at)
@@ -115,6 +117,7 @@ pub async fn insert_session(
     title: &str,
     purpose: &str,
     project_path: &str,
+    project_root: Option<&str>,
     project_name: &str,
     context_prompt: &str,
     skip_permissions: i32,
@@ -130,12 +133,13 @@ pub async fn insert_session(
     worktree_enabled: i32,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO agent_sessions (id, title, purpose, project_path, project_name, context_prompt, skip_permissions, git_name, git_email, created_at, last_used_at, provider, binary_path, profile, base_branch, worktree_branch, worktree_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO agent_sessions (id, title, purpose, project_path, project_root, project_name, context_prompt, skip_permissions, git_name, git_email, created_at, last_used_at, provider, binary_path, profile, base_branch, worktree_branch, worktree_enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id)
     .bind(title)
     .bind(purpose)
     .bind(project_path)
+    .bind(project_root)
     .bind(project_name)
     .bind(context_prompt)
     .bind(skip_permissions)
@@ -151,6 +155,21 @@ pub async fn insert_session(
     .bind(worktree_enabled)
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+pub async fn update_session_project_identity(
+    pool: &SqlitePool,
+    id: &str,
+    project_root: &str,
+    project_name: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE agent_sessions SET project_root = ?, project_name = ? WHERE id = ?")
+        .bind(project_root)
+        .bind(project_name)
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -408,6 +427,7 @@ mod tests {
             "Profile session",
             "Custom",
             "/tmp/project",
+            Some("/tmp/project"),
             "project",
             "",
             0,
@@ -429,5 +449,6 @@ mod tests {
         assert_eq!(session.provider, "hermes");
         assert_eq!(session.profile.as_deref(), Some("work"));
         assert_eq!(session.worktree_enabled, 0);
+        assert_eq!(session.project_root.as_deref(), Some("/tmp/project"));
     }
 }

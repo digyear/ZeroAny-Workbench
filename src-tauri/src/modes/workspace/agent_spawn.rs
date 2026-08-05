@@ -532,11 +532,7 @@ async fn create_hidden_session_and_claim(
 
     let now = chrono::Utc::now().to_rfc3339();
     let session_id = uuid::Uuid::new_v4().to_string();
-    let project_name = std::path::Path::new(project_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("workspace")
-        .to_string();
+    let project_identity = crate::modes::agent::worktree::resolve_project_identity(project_path);
     let card_title = sqlx::query_as::<_, (String,)>(
         "SELECT title FROM workspace_board_cards WHERE id = ?",
     )
@@ -552,7 +548,8 @@ async fn create_hidden_session_and_claim(
         &session_id,
         &title,
         project_path,
-        &project_name,
+        Some(&project_identity.project_root),
+        &project_identity.project_name,
         card_id,
         &coworker.id,
         &now,

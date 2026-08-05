@@ -94,6 +94,15 @@ mod tests {
         .unwrap();
         assert_eq!(worktree_enabled_default, "1");
 
+        let managed_project_root_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('agent_sessions') \
+             WHERE name = 'project_root'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(managed_project_root_count, 1);
+
         let discovered_profile_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('agent_discovered_sessions') \
              WHERE name = 'profile'",

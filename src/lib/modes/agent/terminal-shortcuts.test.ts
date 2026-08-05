@@ -15,21 +15,42 @@ function key(overrides: Partial<KeyboardEvent>): KeyboardEvent {
 }
 
 describe('isTerminalCopyShortcut', () => {
-  test('uses Ctrl+Shift+C on Linux and Windows terminals', () => {
-    expect(isTerminalCopyShortcut(key({ ctrlKey: true, shiftKey: true }))).toBe(true);
+  test('uses Ctrl+Shift+C on Linux terminals', () => {
+    expect(isTerminalCopyShortcut(key({ ctrlKey: true, shiftKey: true }), 'linux')).toBe(true);
+  });
+
+  test('uses Ctrl+Shift+C on Windows terminals', () => {
+    expect(isTerminalCopyShortcut(key({ ctrlKey: true, shiftKey: true }), 'windows')).toBe(true);
   });
 
   test('uses Cmd+C on macOS terminals', () => {
-    expect(isTerminalCopyShortcut(key({ metaKey: true }))).toBe(true);
+    expect(isTerminalCopyShortcut(key({ metaKey: true }), 'macos')).toBe(true);
+  });
+
+  test('does not use Cmd+C on Linux or Windows terminals', () => {
+    expect(isTerminalCopyShortcut(key({ metaKey: true }), 'linux')).toBe(false);
+    expect(isTerminalCopyShortcut(key({ metaKey: true }), 'windows')).toBe(false);
+  });
+
+  test('does not use Ctrl+Shift+C on macOS terminals', () => {
+    expect(isTerminalCopyShortcut(key({ ctrlKey: true, shiftKey: true }), 'macos')).toBe(false);
   });
 
   test('does not steal Ctrl+C from the running process', () => {
-    expect(isTerminalCopyShortcut(key({ ctrlKey: true }))).toBe(false);
+    expect(isTerminalCopyShortcut(key({ ctrlKey: true }), 'linux')).toBe(false);
+    expect(isTerminalCopyShortcut(key({ ctrlKey: true }), 'windows')).toBe(false);
+    expect(isTerminalCopyShortcut(key({ ctrlKey: true }), 'macos')).toBe(false);
+  });
+
+  test('does not accept additional modifiers', () => {
+    expect(isTerminalCopyShortcut(key({ metaKey: true, shiftKey: true }), 'macos')).toBe(false);
+    expect(isTerminalCopyShortcut(key({ ctrlKey: true, shiftKey: true, altKey: true }), 'linux')).toBe(false);
+    expect(isTerminalCopyShortcut(key({ ctrlKey: true, shiftKey: true, metaKey: true }), 'windows')).toBe(false);
   });
 
   test('handles shifted key casing and only keydown events', () => {
-    expect(isTerminalCopyShortcut(key({ key: 'C', ctrlKey: true, shiftKey: true }))).toBe(true);
-    expect(isTerminalCopyShortcut(key({ type: 'keyup', ctrlKey: true, shiftKey: true }))).toBe(false);
+    expect(isTerminalCopyShortcut(key({ key: 'C', ctrlKey: true, shiftKey: true }), 'linux')).toBe(true);
+    expect(isTerminalCopyShortcut(key({ type: 'keyup', ctrlKey: true, shiftKey: true }), 'linux')).toBe(false);
   });
 });
 

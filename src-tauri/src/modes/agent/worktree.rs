@@ -46,13 +46,33 @@ fn managed_worktree_project_root(path: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Resolve a provider session cwd to the stable main-project identity used
-/// for grouping. The cwd itself remains untouched in the discovered-session
-/// row so native resume still opens in the original linked worktree.
-pub(crate) fn resolve_project_root(path: &str) -> String {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectIdentity {
+    pub project_root: String,
+    pub project_name: String,
+    pub is_linked_worktree: bool,
+}
+
+pub(crate) fn project_name_from_path(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Unknown")
+        .to_string()
+}
+
+/// Keep the selected cwd separate from the stable repository identity.
+/// A linked worktree runs in its own checkout, but is grouped under the
+/// primary checkout and must not receive another nested worktree.
+pub(crate) fn resolve_project_identity(path: &str) -> ProjectIdentity {
     let path = path.trim();
     if path.is_empty() {
-        return String::new();
+        return ProjectIdentity {
+            project_root: String::new(),
+            project_name: "Unknown".to_string(),
+            is_linked_worktree: false,
+        };
     }
 
     let common_root = git_output(
@@ -62,17 +82,35 @@ pub(crate) fn resolve_project_root(path: &str) -> String {
     .ok()
     .and_then(output_path)
     .and_then(|common| main_project_from_common_dir(&common));
-
-    common_root
-        .or_else(|| {
-            git_output(path, &["rev-parse", "--show-toplevel"])
-                .ok()
-                .and_then(output_path)
-        })
-        .or_else(|| managed_worktree_project_root(Path::new(path)))
+    let checkout_root = git_output(path, &["rev-parse", "--show-toplevel"])
+        .ok()
+        .and_then(output_path);
+    let managed_root = managed_worktree_project_root(Path::new(path));
+    let is_linked_worktree = match (&common_root, &checkout_root) {
+        (Some(common), Some(checkout)) => common != checkout,
+        (None, None) => managed_root.is_some(),
+        _ => false,
+    };
+    let project_root = common_root
+        .or(checkout_root)
+        .or(managed_root)
         .unwrap_or_else(|| PathBuf::from(path))
         .to_string_lossy()
-        .to_string()
+        .to_string();
+    let project_name = project_name_from_path(&project_root);
+
+    ProjectIdentity {
+        project_root,
+        project_name,
+        is_linked_worktree,
+    }
+}
+
+/// Resolve a provider session cwd to the stable main-project identity used
+/// for grouping. The cwd itself remains untouched in the discovered-session
+/// row so native resume still opens in the original linked worktree.
+pub(crate) fn resolve_project_root(path: &str) -> String {
+    resolve_project_identity(path).project_root
 }
 
 fn validate_new_branch(project_path: &str, branch_name: &str) -> Result<(), String> {
@@ -406,6 +444,22 @@ mod tests {
         let expected = repo.to_string_lossy().to_string();
         assert_eq!(roots[&nested_string], expected);
         assert_eq!(roots[&worktree], expected);
+
+        let main_identity = resolve_project_identity(&nested_string);
+        assert_eq!(main_identity.project_root, expected);
+        assert_eq!(
+            main_identity.project_name,
+            repo.file_name().unwrap().to_string_lossy()
+        );
+        assert!(!main_identity.is_linked_worktree);
+
+        let worktree_identity = resolve_project_identity(&worktree);
+        assert_eq!(worktree_identity.project_root, expected);
+        assert_eq!(
+            worktree_identity.project_name,
+            repo.file_name().unwrap().to_string_lossy()
+        );
+        assert!(worktree_identity.is_linked_worktree);
 
         // Discovery catalogs outlive individual worktrees. Once the linked
         // checkout is removed, its historical cwd must still group under the

@@ -419,14 +419,6 @@ struct NewAgentSession {
     worktree_enabled: Option<bool>,
 }
 
-fn project_name_from_path(path: &str) -> String {
-    std::path::Path::new(path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("Unknown")
-        .to_string()
-}
-
 /// Create a manual session row the same way `agent_create_session`
 /// does (defaults + lazy provider MCP registration), then return it.
 async fn create_session_row(
@@ -438,12 +430,12 @@ async fn create_session_row(
     }
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    let project_name = project_name_from_path(&new.project_path);
+    let identity = crate::modes::agent::worktree::resolve_project_identity(&new.project_path);
     let title = new
         .title
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| project_name.clone());
+        .unwrap_or_else(|| identity.project_name.clone());
     let provider = if new.provider.trim().is_empty() {
         "claude".to_string()
     } else {
@@ -455,7 +447,8 @@ async fn create_session_row(
         &title,
         "",
         &new.project_path,
-        &project_name,
+        Some(&identity.project_root),
+        &identity.project_name,
         "",
         0,
         None,
@@ -467,7 +460,7 @@ async fn create_session_row(
         None,
         None,
         None,
-        if new.worktree_enabled.unwrap_or(true) { 1 } else { 0 },
+        if new.worktree_enabled.unwrap_or(true) && !identity.is_linked_worktree { 1 } else { 0 },
     )
     .await
     .map_err(|e| internal("insert session", e))?;

@@ -26,6 +26,7 @@
   import { tabs as tabsStore, activeTabId, addTab, activateTab, closeTab } from '$lib/shared/stores/tabs';
   import { newSshTabKey, profileIdFromTabKey } from '../tabkey';
   import { getTerminalTheme } from '$lib/utils/theme';
+  import { platform } from '$lib/utils/platform';
   import { appearance } from '$lib/stores/settings';
   import { mode } from '$lib/stores/app';
   import { showToast } from '$lib/shared/primitives/toast';
@@ -257,7 +258,7 @@
 
     // Intercept Cmd/Ctrl+F before xterm handles it, and Escape to close the bar.
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-      if (isTerminalCopyShortcut(e)) {
+      if (isTerminalCopyShortcut(e, platform())) {
         copyTerminalSelection(term, writeText)
           .catch(() => showToast('Copy failed', 'error'));
         return false;

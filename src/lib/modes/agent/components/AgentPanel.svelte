@@ -60,6 +60,7 @@
   import { errorToast, friendlyError } from '$lib/utils/errors';
   import { refreshAgentGitStatus, refreshAgentContextUsage, loadAgentSessions, agentGitBranchName, agentGitFiles, agentGitAhead, agentGitBehind } from '../stores';
   import { getTerminalTheme } from '$lib/utils/theme';
+  import { platform } from '$lib/utils/platform';
   import { appearance } from '$lib/stores/settings';
   import { mode } from '$lib/stores/app';
   import { base64ToBytes, deferUntilFrame, loadWebGLAddon } from '$lib/shared/primitives/terminal-utils';
@@ -624,7 +625,7 @@
     });
 
     t.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-      if (isTerminalCopyShortcut(e)) {
+      if (isTerminalCopyShortcut(e, platform())) {
         copySelection(t);
         return false;
       }
@@ -714,7 +715,15 @@
     try { entry.term.options.scrollback = 10000; } catch (_) {}
     activeTermEntry = entry;
     requestAnimationFrame(() => {
-      try { entry.fitAddon.fit(); } catch (_) {}
+      try {
+        entry.fitAddon.fit();
+        // Reparenting or reopening can leave the PTY at its previous grid.
+        // Always sync after the visible xterm has been fitted; fit() alone
+        // only changes the renderer and may not trigger another observer tick.
+        if (entry.terminalId && !activeTermPhoneOwned()) {
+          agentResizeTerminal(entry.terminalId, entry.term.cols, entry.term.rows).catch(() => {});
+        }
+      } catch (_) {}
       if (termFindOpen) {
         termFindInputEl?.focus();
         if (termFindQuery) {
@@ -765,7 +774,7 @@
     });
 
     t.attachCustomKeyEventHandler((e: KeyboardEvent) => {
-      if (isTerminalCopyShortcut(e)) {
+      if (isTerminalCopyShortcut(e, platform())) {
         copySelection(t);
         return false;
       }
@@ -838,7 +847,12 @@
     try { sEntry.term.options.scrollback = 5000; } catch (_) {}
     activeShellEntry = sEntry;
     requestAnimationFrame(() => {
-      try { sEntry.fitAddon.fit(); } catch (_) {}
+      try {
+        sEntry.fitAddon.fit();
+        if (sEntry.terminalId) {
+          agentResizeTerminal(sEntry.terminalId, sEntry.term.cols, sEntry.term.rows).catch(() => {});
+        }
+      } catch (_) {}
       if (shellFindOpen) {
         shellFindInputEl?.focus();
         if (shellFindQuery) {
@@ -967,7 +981,15 @@
     };
     try {
       const shellTermId = await agentSpawnShell(projectPath, channel);
+      sEntry.terminalId = shellTermId;
       agentShellIds.update(m => { m.set(session.id, shellTermId); return new Map(m); });
+      // The first fit usually runs before agentSpawnShell returns, when no
+      // terminal id exists yet. Explicitly catch the backend PTY up from its
+      // 80x24 default to the already-fitted xterm grid.
+      try {
+        sEntry.fitAddon.fit();
+        await agentResizeTerminal(shellTermId, sEntry.term.cols, sEntry.term.rows);
+      } catch (_) {}
     } catch (e) {
       sEntry.term.write(`\r\nFailed to spawn shell: ${e}\r\n`);
     }
@@ -1119,15 +1141,16 @@
       // merge history. Legacy rows without branch metadata fall back to a
       // readable title slug and the project root's current branch.
       if (session.worktreeEnabled !== 0 && !session.worktreePath && !session.claudeSessionId) {
-        const isGit = await agentIsGitRepo(session.projectPath);
+        const projectRoot = session.projectRoot || session.projectPath;
+        const isGit = await agentIsGitRepo(projectRoot);
         if (isGit) {
           const branchName = session.worktreeBranch || defaultBranchName(session.title);
-          const baseBranch = session.baseBranch || await agentGitBranch(session.projectPath);
+          const baseBranch = session.baseBranch || await agentGitBranch(projectRoot);
           if (!branchName || !baseBranch || baseBranch === 'HEAD') {
             throw new Error('Cannot create worktree: branch name or base branch is missing');
           }
           const worktreePath = await agentCreateWorktree(
-            session.projectPath,
+            projectRoot,
             session.id,
             baseBranch,
             branchName,
@@ -1462,15 +1485,19 @@
         onOutput,
       });
       console.log(`[TERM] Spawn complete: termId=${termId}, gen=${myGeneration}`);
+      entry.terminalId = termId;
       agentTerminalIds.update(m => { m.set(session.id, termId); return new Map(m); });
 
       // Start context usage polling (Feature 2)
       startContextUsagePolling(session);
 
-      // Visual fit only — ResizeObserver handles debounced PTY resize
-      requestAnimationFrame(() => {
-        try { entry!.fitAddon.fit(); } catch (_) {}
-      });
+      // The first fit/ResizeObserver pass happens before terminalId exists.
+      // Explicitly synchronize the freshly spawned PTY so full-screen TUIs
+      // such as Hermes do not remain at the backend's 80x24 default.
+      try {
+        entry.fitAddon.fit();
+        await agentResizeTerminal(termId, entry.term.cols, entry.term.rows);
+      } catch (_) {}
 
       if (get(agentShellOpen)) spawnShellForSession(session);
       refreshAgentGitStatus();
@@ -1774,7 +1801,7 @@
     // the user can retry instead of losing the only pointer to an orphan.
     if (session.worktreePath) {
       try {
-        await agentRemoveWorktree(session.projectPath, session.worktreePath, force);
+        await agentRemoveWorktree(session.projectRoot || session.projectPath, session.worktreePath, force);
       } catch (e) {
         showToast(`Session was not deleted because worktree cleanup failed: ${friendlyError(e)}`, 'error');
         return;
