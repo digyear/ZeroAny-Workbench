@@ -1,7 +1,7 @@
 {
   "name": "zeroany-workbench",
   "private": true,
-  "version": "3.5.0",
+  "version": "3.5.1",
   "description": "ZeroAny Workbench — Zero, one, any workspace",
   "author": "ZeroAny Workbench contributors",
   "license": "LicenseRef-PolyForm-Noncommercial-1.0.0",

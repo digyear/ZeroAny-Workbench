@@ -19,7 +19,7 @@ use tauri::Manager;
 use tokio::sync::watch;
 
 use crate::cloud::auth::AuthState;
-use crate::cloud::config::API_BASE_URL;
+use crate::cloud::config::{api_available, API_BASE_URL};
 use crate::shared::http::build_app_http_client;
 
 use crate::shared::repos::settings;
@@ -181,6 +181,10 @@ pub async fn companion_send_test_push(app: tauri::AppHandle) -> Result<String, S
         .await
         .map_err(|e| format!("HTTP client build failed: {e}"))?;
 
+    if !api_available() {
+        return Err("No API base URL configured at build time.".into());
+    }
+
     // Worker caps each call at 10 tokens; one batch is plenty for a test.
     let fcm_tokens: Vec<&str> = tokens.iter().take(10).map(|(_, t)| t.as_str()).collect();
     let total = fcm_tokens.len();
@@ -265,6 +269,12 @@ fn desktop_focused(app: &tauri::AppHandle) -> bool {
 /// Per-token `stale:true` in the response clears that token so we stop
 /// hitting a dead registration.
 pub async fn notify_devices(app: &tauri::AppHandle, title: &str, body: &str, data: Value) {
+    // No API configured at build time — skip silently.
+    if !api_available() {
+        crate::diag!(area: "notify", "push skipped: no API base URL configured");
+        return;
+    }
+
     let pool = app.state::<SqlitePool>();
     let pool = pool.inner();
 

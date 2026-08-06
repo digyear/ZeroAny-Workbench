@@ -1,8 +1,15 @@
-// Compile-time API base. Override at build with CLAUGE_API_URL.
+// Compile-time API base. Set at build with CLAUGE_API_URL.
+// Empty by default — all cloud endpoints (auth, sync, telemetry, push)
+// become no-ops when no URL is configured.
 pub const API_BASE_URL: &str = match option_env!("CLAUGE_API_URL") {
     Some(v) => v,
-    None => "https://clauge.in",
+    None => "",
 };
+
+/// Returns true when a cloud API base URL has been configured at build time.
+pub fn api_available() -> bool {
+    !API_BASE_URL.is_empty()
+}
 
 // OS keyring service for cloud auth tokens. Separate service from SSH /
 // Explorer secrets so wiping cloud auth doesn't touch user-saved credentials.

@@ -5,7 +5,7 @@ use serde::de::DeserializeOwned;
 use sqlx::SqlitePool;
 
 use crate::cloud::auth::AuthState;
-use crate::cloud::config::API_BASE_URL;
+use crate::cloud::config::{api_available, API_BASE_URL};
 use crate::cloud::models::{
     AuthResponse, MeResponse, SyncHistoryBlob, SyncHistoryEntry, SyncPullResponse,
     SyncPushResponse, SyncStateRow,
@@ -16,6 +16,7 @@ use crate::shared::http::build_app_http_client;
 #[derive(Debug)]
 pub enum CloudError {
     NotAuthenticated,
+    NotConfigured,
     Network(String),
     Server { status: u16, body: String },
     /// 412 Precondition Failed from `/api/sync/push/:kind` — remote hash
@@ -28,6 +29,7 @@ impl std::fmt::Display for CloudError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CloudError::NotAuthenticated => write!(f, "Not signed in to Clauge cloud"),
+            CloudError::NotConfigured => write!(f, "Cloud API not configured at build time"),
             CloudError::Network(e) => write!(f, "Network error: {}", e),
             CloudError::Server { status, body } => write!(f, "Cloud API {}: {}", status, body),
             CloudError::Conflict { .. } => write!(f, "Remote has changed since this device last synced."),
@@ -152,6 +154,7 @@ pub async fn update_profile(
     first_name: Option<String>,
     last_name: Option<String>,
 ) -> Result<MeResponse, CloudError> {
+    if !api_available() { return Err(CloudError::NotConfigured); }
     with_google_refresh_retry(pool, state, || async {
         let (token, provider) = state
             .active_token_and_provider()
@@ -182,6 +185,7 @@ pub async fn delete_account(
     state: &AuthState,
     confirm_slug: &str,
 ) -> Result<(), CloudError> {
+    if !api_available() { return Err(CloudError::NotConfigured); }
     with_google_refresh_retry(pool, state, || async {
         let (token, provider) = state
             .active_token_and_provider()
@@ -382,6 +386,7 @@ pub async fn sync_push(
 }
 
 pub async fn sync_wipe(pool: &SqlitePool, state: &AuthState) -> Result<(), CloudError> {
+    if !api_available() { return Err(CloudError::NotConfigured); }
     with_google_refresh_retry(pool, state, || async {
         let (token, provider) = state
             .active_token_and_provider()
@@ -407,6 +412,7 @@ pub(crate) async fn get_json_no_auth<T: DeserializeOwned>(
     pool: &SqlitePool,
     path: &str,
 ) -> Result<T, CloudError> {
+    if !api_available() { return Err(CloudError::NotConfigured); }
     let client = build_app_http_client(pool).await.map_err(CloudError::Network)?;
     let resp = client
         .get(format!("{}{}", API_BASE_URL, path))
@@ -421,6 +427,7 @@ pub(crate) async fn post_json_no_auth<T: DeserializeOwned>(
     path: &str,
     body: serde_json::Value,
 ) -> Result<T, CloudError> {
+    if !api_available() { return Err(CloudError::NotConfigured); }
     let client = build_app_http_client(pool).await.map_err(CloudError::Network)?;
     let resp = client
         .post(format!("{}{}", API_BASE_URL, path))

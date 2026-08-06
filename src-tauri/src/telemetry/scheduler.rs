@@ -32,7 +32,7 @@ use tauri::AppHandle;
 use tauri::Manager;
 
 use crate::cloud::auth::AuthState;
-use crate::cloud::config::API_BASE_URL;
+use crate::cloud::config::{api_available, API_BASE_URL};
 use crate::shared::repos::settings as settings_repo;
 use crate::telemetry::counters::{drain, restore};
 use crate::telemetry::device::fingerprint;
@@ -89,6 +89,13 @@ async fn run_loop(app: AppHandle) {
 }
 
 async fn flush_once(_app: &AppHandle, pool: &SqlitePool) {
+    // No API configured at build time — drain counters and skip.
+    if !api_available() {
+        let _ = drain();
+        schedule_next(pool, FLUSH_INTERVAL_SECS).await;
+        return;
+    }
+
     let opted_out = settings_repo::get_bool_or(pool, SETTING_OPTOUT, false).await;
 
     // Drain counters even when opted out — otherwise they'd grow
