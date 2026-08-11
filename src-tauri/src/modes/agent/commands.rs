@@ -78,9 +78,7 @@ pub async fn agent_create_session(
     let provider = provider
         .filter(|p| !p.trim().is_empty())
         .unwrap_or_else(|| "claude".to_string());
-    let skip = if provider == "hermes" {
-        0
-    } else if skip_permissions.unwrap_or(false) {
+    let skip = if skip_permissions.unwrap_or(false) {
         1
     } else {
         0
@@ -162,16 +160,7 @@ pub async fn agent_update_session(
         sessions_repo::update_session_title(pool.inner(), &id, &t).await.map_err(|e| e.to_string())?;
     }
     if let Some(sp) = skip_permissions {
-        let session = sessions_repo::get_session_by_id(pool.inner(), &id)
-            .await
-            .map_err(|e| e.to_string())?;
-        let val = if session.provider == "hermes" {
-            0
-        } else if sp {
-            1
-        } else {
-            0
-        };
+        let val = if sp { 1 } else { 0 };
         sessions_repo::update_session_skip_permissions(pool.inner(), &id, val).await.map_err(|e| e.to_string())?;
     }
     if let Some(ref name) = git_name {

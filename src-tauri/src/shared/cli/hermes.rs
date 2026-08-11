@@ -252,9 +252,12 @@ impl CliRunner for HermesRunner {
         {
             cmd.push_str(&format!(" --resume \"{}\"", sid));
         }
-        // Workbench always uses Hermes smart approvals. Never translate the
-        // shared skip-permissions option into unrestricted --yolo mode.
-        let _ = opts.skip_permissions;
+        // Keep the profile default on smart approvals, but allow this session
+        // to explicitly bypass approvals when the user enables the permission
+        // override in Workbench.
+        if opts.skip_permissions {
+            cmd.push_str(" --yolo");
+        }
 
         // Hermes reads AGENTS.md. AgentPanel calls agent_inject_purpose before
         // spawn, so consuming the shared option here is intentional.
@@ -372,7 +375,7 @@ mod tests {
         assert_eq!(HERMES.build_spawn_command(&opts(None, false)), "hermes");
         assert_eq!(
             HERMES.build_spawn_command(&opts(Some("20260717_183257_d25185"), true)),
-            "hermes --resume \"20260717_183257_d25185\""
+            "hermes --resume \"20260717_183257_d25185\" --yolo"
         );
     }
 
@@ -389,15 +392,14 @@ mod tests {
         resumed.profile = Some("cozy-engineer".into());
         assert_eq!(
             HERMES.build_spawn_command(&resumed),
-            "hermes --profile \"cozy-engineer\" --resume \"20260717_183257_d25185\""
+            "hermes --profile \"cozy-engineer\" --resume \"20260717_183257_d25185\" --yolo"
         );
     }
 
     #[test]
-    fn skip_permissions_never_enables_yolo_for_hermes() {
+    fn skip_permissions_enables_yolo_for_hermes() {
         let command = HERMES.build_spawn_command(&opts(None, true));
-        assert_eq!(command, "hermes");
-        assert!(!command.contains("--yolo"));
+        assert_eq!(command, "hermes --yolo");
     }
 
     #[test]
