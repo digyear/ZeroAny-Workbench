@@ -189,8 +189,8 @@
 
       <div class="ns-toggle-row">
         <div class="ns-toggle-info">
-          <span class="ns-toggle-text">{session.provider === 'hermes' ? 'YOLO mode' : 'Skip permissions'}</span>
-          <span class="ns-toggle-hint">{session.provider === 'hermes' ? 'On: bypass approvals with --yolo · Off: use smart automatic review' : 'Auto-approve all tool calls without confirmation'}</span>
+          <span class="ns-toggle-text">Skip permissions</span>
+          <span class="ns-toggle-hint">Auto-approve all tool calls without confirmation</span>
         </div>
         <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
         <button class="ns-toggle" class:on={skipPermissions} onclick={() => skipPermissions = !skipPermissions}>

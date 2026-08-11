@@ -561,8 +561,8 @@
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19.69 14a6.9 6.9 0 00.31-2V5l-8-3-3.16 1.18"/><path d="M4.73 4.73L4 5v7c0 6 8 10 8 10a20.29 20.29 0 005.62-4.38"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
                   </span>
                   <div class="ns-adv-info">
-                    <span class="ns-adv-title">{provider === 'hermes' ? 'YOLO mode' : 'Skip permissions'}</span>
-                    <span class="ns-adv-desc">{provider === 'hermes' ? 'On: bypass approvals with --yolo · Off: use smart automatic review' : 'Auto-approve all tool calls without confirmation'}</span>
+                    <span class="ns-adv-title">Skip permissions</span>
+                    <span class="ns-adv-desc">Auto-approve all tool calls without confirmation</span>
                   </div>
                   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
                   <button class="ns-toggle" class:on={skipPermissions} onclick={() => skipPermissions = !skipPermissions}>
