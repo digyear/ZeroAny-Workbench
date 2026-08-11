@@ -20,6 +20,19 @@ export function base64ToBytes(b64: string): Uint8Array {
 }
 
 /**
+ * A mirrored phone and the hidden desktop xterm both parse PTY output. xterm
+ * emits terminal-query replies (OSC/DA/DSR) through `onData`, just like typed
+ * input. While the phone owns the shared PTY, only its visible terminal may
+ * answer; forwarding the desktop copy would inject a duplicate reply.
+ */
+export function shouldForwardDesktopTerminalData(
+  terminalId: string | null | undefined,
+  phoneOwned: ReadonlySet<string>,
+): terminalId is string {
+  return !!terminalId && !phoneOwned.has(terminalId);
+}
+
+/**
  * Run `callback` after two successive animation frames.
  *
  * Why 2-rAF and not 1: when the first PTY chunk arrives, calling

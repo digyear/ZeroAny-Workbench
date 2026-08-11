@@ -63,7 +63,7 @@
   import { platform } from '$lib/utils/platform';
   import { appearance } from '$lib/stores/settings';
   import { mode } from '$lib/stores/app';
-  import { base64ToBytes, deferUntilFrame, loadWebGLAddon } from '$lib/shared/primitives/terminal-utils';
+  import { base64ToBytes, deferUntilFrame, loadWebGLAddon, shouldForwardDesktopTerminalData } from '$lib/shared/primitives/terminal-utils';
   import { getPurposePrompt } from '../ai/prompt';
   import { defaultBranchName } from '../branch-name';
   import { copyTerminalSelection, isTerminalCopyShortcut } from '../terminal-shortcuts';
@@ -644,7 +644,7 @@
       if (!data) return;
       const tIds = get(agentTerminalIds);
       const termId = tIds.get(sessionId);
-      if (termId) {
+      if (shouldForwardDesktopTerminalData(termId, get(phoneOwnedTerminals))) {
         agentWriteToTerminal(termId, data).catch(() => {
           // PTY dead (I/O error) — treat as session exit. Mirror the
           // natural-exit path: clear the live termId, mark activity done,
@@ -798,7 +798,7 @@
       if (!data) return;
       const sIds = get(agentShellIds);
       const shellId = sIds.get(sessionId);
-      if (shellId) {
+      if (shouldForwardDesktopTerminalData(shellId, get(phoneOwnedTerminals))) {
         agentWriteToTerminal(shellId, data).catch(() => {
           // Shell process died
           agentShellIds.update(m => { m.delete(sessionId); return new Map(m); });

@@ -30,7 +30,7 @@
   import { appearance } from '$lib/stores/settings';
   import { mode } from '$lib/stores/app';
   import { showToast } from '$lib/shared/primitives/toast';
-  import { base64ToBytes, deferUntilFrame, loadWebGLAddon } from '$lib/shared/primitives/terminal-utils';
+  import { base64ToBytes, deferUntilFrame, loadWebGLAddon, shouldForwardDesktopTerminalData } from '$lib/shared/primitives/terminal-utils';
   import { resolveSshCapture, rejectAllSshCaptures, type SshCaptureRequest } from '../ai/execute';
   import type { SshProfile, SshTerminalPayload } from '../types';
   import { SSH_EVENT } from '$lib/shared/constants/events';
@@ -294,7 +294,7 @@
 
     term.onData((data) => {
       const id = entry.terminalId;
-      if (!id) return;
+      if (!shouldForwardDesktopTerminalData(id, get(phoneOwnedTerminals))) return;
       sshWriteToTerminal(id, data).catch(() => {
         // PTY/channel dead — mark exited and surface reconnect banner
         markExited(tabKey);

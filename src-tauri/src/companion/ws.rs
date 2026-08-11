@@ -63,6 +63,109 @@ fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+fn replay_without_terminal_queries(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != 0x1b || i + 1 >= bytes.len() {
+            out.push(bytes[i]);
+            i += 1;
+            continue;
+        }
+
+        match bytes[i + 1] {
+            b']' => {
+                let Some(end) = control_string_end(bytes, i + 2, true) else {
+                    out.extend_from_slice(&bytes[i..]);
+                    break;
+                };
+                let payload_end = if bytes[end - 1] == 0x07 {
+                    end - 1
+                } else {
+                    end - 2
+                };
+                if !is_osc_query(&bytes[i + 2..payload_end]) {
+                    out.extend_from_slice(&bytes[i..end]);
+                }
+                i = end;
+            }
+            b'P' => {
+                let Some(end) = control_string_end(bytes, i + 2, false) else {
+                    out.extend_from_slice(&bytes[i..]);
+                    break;
+                };
+                let payload = &bytes[i + 2..end - 2];
+                if !payload.starts_with(b"$q") && !payload.starts_with(b"+q") {
+                    out.extend_from_slice(&bytes[i..end]);
+                }
+                i = end;
+            }
+            b'[' => {
+                let Some(final_offset) = bytes[i + 2..]
+                    .iter()
+                    .position(|b| (0x40..=0x7e).contains(b))
+                else {
+                    out.extend_from_slice(&bytes[i..]);
+                    break;
+                };
+                let end = i + 3 + final_offset;
+                if !is_csi_query(&bytes[i + 2..end]) {
+                    out.extend_from_slice(&bytes[i..end]);
+                }
+                i = end;
+            }
+            _ => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn control_string_end(bytes: &[u8], start: usize, bel_terminated: bool) -> Option<usize> {
+    let mut i = start;
+    while i < bytes.len() {
+        if bel_terminated && bytes[i] == 0x07 {
+            return Some(i + 1);
+        }
+        if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&b'\\') {
+            return Some(i + 2);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn is_osc_query(payload: &[u8]) -> bool {
+    let Some(separator) = payload.iter().position(|b| *b == b';') else {
+        return false;
+    };
+    let command = &payload[..separator];
+    let args = &payload[separator + 1..];
+    matches!(
+        command,
+        b"4" | b"10" | b"11" | b"12" | b"13" | b"14" | b"17" | b"19" | b"52"
+    ) && args.split(|b| *b == b';').any(|arg| arg == b"?")
+}
+
+fn is_csi_query(sequence: &[u8]) -> bool {
+    let Some((&final_byte, params)) = sequence.split_last() else {
+        return false;
+    };
+    match final_byte {
+        b'c' => params
+            .iter()
+            .all(|b| b.is_ascii_digit() || matches!(b, b';' | b'>' | b'=' | b'?')),
+        b'n' => matches!(params, b"5" | b"6" | b"?6" | b"?15" | b"?25" | b"?26"),
+        b't' => matches!(
+            params,
+            b"11" | b"13" | b"14" | b"16" | b"18" | b"19" | b"20" | b"21"
+        ),
+        _ => false,
+    }
+}
+
 async fn handle_socket(
     mut socket: WebSocket,
     state: Arc<CompanionAppState>,
@@ -115,14 +218,25 @@ async fn handle_socket(
     // Replay first so the phone paints history before any live bytes,
     // then the current effective size (absent until some client has
     // reported one).
-    let replay = json!({ "t": "replay", "d": b64(&scrollback) });
-    if ws_tx.send(Message::Text(replay.to_string().into())).await.is_err() {
+    // Historical terminal queries must not be replayed into a live xterm: its
+    // generated replies would be forwarded as fresh keyboard input to the PTY.
+    let replay_bytes = replay_without_terminal_queries(&scrollback);
+    let replay = json!({ "t": "replay", "d": b64(&replay_bytes) });
+    if ws_tx
+        .send(Message::Text(replay.to_string().into()))
+        .await
+        .is_err()
+    {
         detach(&terminal_id, &client_id);
         return;
     }
     if let Some((cols, rows)) = effective_size {
         let size = json!({ "t": "size", "cols": cols, "rows": rows });
-        if ws_tx.send(Message::Text(size.to_string().into())).await.is_err() {
+        if ws_tx
+            .send(Message::Text(size.to_string().into()))
+            .await
+            .is_err()
+        {
             detach(&terminal_id, &client_id);
             return;
         }
@@ -249,7 +363,10 @@ fn write_input(state: &CompanionAppState, terminal_id: &str, kind: TermKind, byt
             let ssh_state = state.app.state::<SshTerminalState>();
             let map = ssh_state.terminals.lock();
             match map.get(terminal_id) {
-                Some(entry) => entry.handle_tx.send(SshCommand::Write(bytes.to_vec())).is_ok(),
+                Some(entry) => entry
+                    .handle_tx
+                    .send(SshCommand::Write(bytes.to_vec()))
+                    .is_ok(),
                 None => false,
             }
         }
@@ -259,5 +376,34 @@ fn write_input(state: &CompanionAppState, terminal_id: &str, kind: TermKind, byt
     // terminal or a failed write must not clear a real "needs you" badge.
     if delivered {
         fanout::note_input(terminal_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replay_without_terminal_queries;
+
+    #[test]
+    fn removes_queries_that_would_generate_stale_xterm_replies() {
+        let input = b"before\x1b]11;?\x07middle\x1b[6nafter\x1bP$qm\x1b\\done";
+        assert_eq!(
+            replay_without_terminal_queries(input),
+            b"beforemiddleafterdone"
+        );
+    }
+
+    #[test]
+    fn keeps_rendering_sequences_and_ordinary_text() {
+        let input = b"\x1b[31mred\x1b[0m\x1b]0;question? title\x07\xe4\xbd\xa0\xe5\xa5\xbd";
+        assert_eq!(replay_without_terminal_queries(input), input);
+    }
+
+    #[test]
+    fn supports_st_terminated_osc_queries_and_preserves_incomplete_sequences() {
+        assert_eq!(replay_without_terminal_queries(b"a\x1b]11;?\x1b\\b"), b"ab");
+        assert_eq!(
+            replay_without_terminal_queries(b"a\x1b]11;?"),
+            b"a\x1b]11;?"
+        );
     }
 }
