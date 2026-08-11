@@ -1,6 +1,6 @@
 use crate::companion::fanout;
 use crate::modes::agent::models::{TerminalEntry, TerminalOutputPayload, TerminalState};
-use crate::shared::repos::settings as settings_repo;
+use crate::shared::repos::{sessions as sessions_repo, settings as settings_repo};
 use crate::shared::cli::{registry::runner_for, runner::{CliRunner, SpawnOpts}};
 use crate::shared::platform::shell::default_user_shell;
 use base64::Engine;
@@ -103,16 +103,41 @@ pub(crate) async fn spawn_agent_terminal_impl(
     on_output: Option<Channel<TerminalOutputPayload>>,
 ) -> Result<String, String> {
     crate::telemetry::bump("agent.spawn");
-    let terminal_id = Uuid::new_v4().to_string();
-    let pty_system = native_pty_system();
-    let pty_pair = pty_system
-        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
-        .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
     // Provider is passed in from the frontend (which reads it off the
     // session row). Unknown / missing → Claude via runner_for's default.
     let provider = provider.unwrap_or_else(|| "claude".to_string());
     let cli: &dyn CliRunner = runner_for(&provider);
+
+    if provider == "hermes" {
+        let stored = if let Some(row_id) = session_ref.as_deref() {
+            sessions_repo::get_session_by_id(pool, row_id).await.ok()
+        } else {
+            None
+        };
+        let (native_path, native_name) = if let Some(session) = stored {
+            (
+                session.project_root.unwrap_or(session.project_path),
+                session.project_name,
+            )
+        } else {
+            let identity = crate::modes::agent::worktree::resolve_project_identity(&project_path);
+            (identity.project_root, identity.project_name)
+        };
+        crate::shared::cli::hermes::prepare_native_project(
+            binary_path.as_deref(),
+            profile.as_deref(),
+            &native_path,
+            &native_name,
+        )
+        .await?;
+    }
+
+    let terminal_id = Uuid::new_v4().to_string();
+    let pty_system = native_pty_system();
+    let pty_pair = pty_system
+        .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
+        .map_err(|e| format!("Failed to open PTY: {}", e))?;
 
     // Hook-driven attention. OFF by default — injecting hook flags/env
     // (codex `-c notify`/TUI-log, opencode config-dir) was observed to break

@@ -103,7 +103,7 @@
       await agentUpdateSession({
         id: session.id,
         title: title.trim(),
-        skipPermissions: skipPermissions ? true : undefined,
+        skipPermissions: session.provider === 'hermes' ? false : (skipPermissions ? true : undefined),
         gitName: gitEnabled && gitName.trim() ? gitName.trim() : undefined,
         gitEmail: gitEnabled && gitEmail.trim() ? gitEmail.trim() : undefined,
         contextPrompt: contextPrompt,
@@ -132,7 +132,7 @@
           ...session,
           title: title.trim(),
           contextPrompt,
-          skipPermissions: skipPermissions ? 1 : 0,
+          skipPermissions: session.provider === 'hermes' ? 0 : (skipPermissions ? 1 : 0),
           gitName: gitEnabled && gitName.trim() ? gitName.trim() : null,
           gitEmail: gitEnabled && gitEmail.trim() ? gitEmail.trim() : null,
           binaryPath: useCustomBinary && customBinaryPath.trim() ? customBinaryPath.trim() : null,
@@ -187,17 +187,25 @@
 
       <div class="ns-adv-label">Advanced</div>
 
-      <!-- Skip Permissions toggle -->
-      <div class="ns-toggle-row">
-        <div class="ns-toggle-info">
-          <span class="ns-toggle-text">Skip permissions</span>
-          <span class="ns-toggle-hint">Auto-approve all tool calls without confirmation</span>
+      {#if session.provider === 'hermes'}
+        <div class="ns-toggle-row">
+          <div class="ns-toggle-info">
+            <span class="ns-toggle-text">Smart approvals</span>
+            <span class="ns-toggle-hint">Hermes reviews risky commands automatically; --yolo is disabled</span>
+          </div>
         </div>
-        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-        <button class="ns-toggle" class:on={skipPermissions} onclick={() => skipPermissions = !skipPermissions}>
-          <span class="ns-toggle-knob"></span>
-        </button>
-      </div>
+      {:else}
+        <div class="ns-toggle-row">
+          <div class="ns-toggle-info">
+            <span class="ns-toggle-text">Skip permissions</span>
+            <span class="ns-toggle-hint">Auto-approve all tool calls without confirmation</span>
+          </div>
+          <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+          <button class="ns-toggle" class:on={skipPermissions} onclick={() => skipPermissions = !skipPermissions}>
+            <span class="ns-toggle-knob"></span>
+          </button>
+        </div>
+      {/if}
 
       <!-- Git Identity toggle -->
       <div class="ns-toggle-row">

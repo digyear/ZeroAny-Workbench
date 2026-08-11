@@ -280,7 +280,7 @@
         title: title.trim(),
         purpose,
         projectPath: projectPath.trim(),
-        skipPermissions: skipPermissions || undefined,
+        skipPermissions: provider === 'hermes' ? undefined : (skipPermissions || undefined),
         customPrompt: purpose === 'Custom'
           ? (customPrompt.trim() || undefined)
           : (getPurposePrompt(purpose) ?? undefined),
@@ -555,23 +555,35 @@
                square, title, description, and a toggle. When toggled
                ON, the inline inputs slide in directly below the card. -->
           <div class="ns-adv-list">
-            <!-- Skip permissions -->
-            <div class="ns-adv-card">
-              <div class="ns-adv-row">
-                <span class="ns-adv-icon" style="background: color-mix(in srgb, var(--err, #f85149) 14%, transparent); color: var(--err, #f85149);">
-                  <!-- shield-off (lucide-style) -->
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19.69 14a6.9 6.9 0 00.31-2V5l-8-3-3.16 1.18"/><path d="M4.73 4.73L4 5v7c0 6 8 10 8 10a20.29 20.29 0 005.62-4.38"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-                </span>
-                <div class="ns-adv-info">
-                  <span class="ns-adv-title">Skip permissions</span>
-                  <span class="ns-adv-desc">Auto-approve all tool calls without confirmation</span>
+            {#if provider === 'hermes'}
+              <div class="ns-adv-card">
+                <div class="ns-adv-row">
+                  <span class="ns-adv-icon" style="background: color-mix(in srgb, #3fb950 14%, transparent); color: #3fb950;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+                  </span>
+                  <div class="ns-adv-info">
+                    <span class="ns-adv-title">Smart approvals</span>
+                    <span class="ns-adv-desc">Hermes automatically reviews risky commands; unrestricted --yolo mode is disabled</span>
+                  </div>
                 </div>
-                <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-                <button class="ns-toggle" class:on={skipPermissions} onclick={() => skipPermissions = !skipPermissions}>
-                  <span class="ns-toggle-knob"></span>
-                </button>
               </div>
-            </div>
+            {:else}
+              <div class="ns-adv-card">
+                <div class="ns-adv-row">
+                  <span class="ns-adv-icon" style="background: color-mix(in srgb, var(--err, #f85149) 14%, transparent); color: var(--err, #f85149);">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19.69 14a6.9 6.9 0 00.31-2V5l-8-3-3.16 1.18"/><path d="M4.73 4.73L4 5v7c0 6 8 10 8 10a20.29 20.29 0 005.62-4.38"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                  </span>
+                  <div class="ns-adv-info">
+                    <span class="ns-adv-title">Skip permissions</span>
+                    <span class="ns-adv-desc">Auto-approve all tool calls without confirmation</span>
+                  </div>
+                  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+                  <button class="ns-toggle" class:on={skipPermissions} onclick={() => skipPermissions = !skipPermissions}>
+                    <span class="ns-toggle-knob"></span>
+                  </button>
+                </div>
+              </div>
+            {/if}
 
             <!-- Git identity -->
             <div class="ns-adv-card">

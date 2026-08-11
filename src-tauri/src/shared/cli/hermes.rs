@@ -1,20 +1,23 @@
 // Hermes Agent CLI implementation of [`CliRunner`].
 //
 // Hermes starts interactively with the bare `hermes` command. Sessions are
-// resumed with the global `--resume <session-id>` option and approvals can be
-// bypassed with `--yolo`. Project instructions live in `AGENTS.md`; Agent
+// resumed with the global `--resume <session-id>` option. Project instructions live in `AGENTS.md`; Agent
 // mode writes those before spawn rather than trying to pass a system prompt.
 // Hermes stores session metadata in a profile-specific `state.db`, so
 // discovery is implemented in `modes/agent/usage.rs` and filtered by both the
 // selected profile and session cwd.
 
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use sqlx::sqlite::SqliteConnectOptions;
 
 use super::runner::{CliRunner, SpawnOpts};
 
 pub struct HermesRunner;
 
 const BINARY: &str = "hermes";
+static PROJECT_SETUP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 impl HermesRunner {
     pub(crate) fn hermes_home(&self) -> Option<PathBuf> {
@@ -50,6 +53,161 @@ fn is_safe_profile_name(s: &str) -> bool {
         && s.len() <= 64
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+}
+
+fn normalized_project_path(path: &str) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Hermes project path is empty".into());
+    }
+    let path = PathBuf::from(trimmed);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .map_err(|error| format!("Cannot resolve Hermes project path: {error}"))
+    }
+}
+
+fn path_is_within(path: &Path, folder: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let path = path.to_string_lossy().to_lowercase();
+        let folder = folder.to_string_lossy().to_lowercase();
+        return Path::new(&path).starts_with(Path::new(&folder));
+    }
+    #[cfg(not(windows))]
+    path.starts_with(folder)
+}
+
+fn run_hermes(binary: &str, profile: &str, args: &[&str]) -> Result<Output, String> {
+    let mut command = Command::new(binary);
+    command.args(["--profile", profile]);
+    let output = command
+        .args(args)
+        .output()
+        .map_err(|error| format!("Failed to run Hermes: {error}"))?;
+    if output.status.success() {
+        return Ok(output);
+    }
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if detail.is_empty() {
+        format!("Hermes command failed with {}", output.status)
+    } else {
+        format!("Hermes command failed: {detail}")
+    })
+}
+
+fn smart_approvals_enabled(output: &Output) -> bool {
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .trim_matches('"')
+        == "smart"
+}
+
+/// Register the Workbench workspace as a first-class, profile-scoped Hermes
+/// Project and force Hermes' reviewed smart-approval mode before launch.
+pub(crate) async fn prepare_native_project(
+    binary_override: Option<&str>,
+    profile: Option<&str>,
+    project_path: &str,
+    project_name: &str,
+) -> Result<(), String> {
+    let profile = profile
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("default")
+        .to_string();
+    if !is_safe_profile_name(&profile) {
+        return Err(format!("Invalid Hermes profile name: {profile}"));
+    }
+    let path = normalized_project_path(project_path)?;
+    if !path.is_dir() {
+        return Err(format!(
+            "Hermes project folder does not exist: {}",
+            path.display()
+        ));
+    }
+    let name = if project_name.trim().is_empty() {
+        path.file_name()
+            .and_then(|part| part.to_str())
+            .unwrap_or("Project")
+            .to_string()
+    } else {
+        project_name.trim().to_string()
+    };
+    let binary = binary_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| HERMES.resolve_binary_path());
+    let db_path = HERMES
+        .profile_home(Some(&profile))
+        .ok_or_else(|| "Cannot determine Hermes profile directory".to_string())?
+        .join("projects.db");
+    let path_arg = path.to_string_lossy().to_string();
+
+    let _guard = PROJECT_SETUP_LOCK.lock().await;
+    let setup_binary = binary.clone();
+    let setup_profile = profile.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let approvals = run_hermes(
+            &setup_binary,
+            &setup_profile,
+            &["config", "get", "approvals.mode", "--json"],
+        )?;
+        if !smart_approvals_enabled(&approvals) {
+            run_hermes(
+                &setup_binary,
+                &setup_profile,
+                &["config", "set", "approvals.mode", "smart"],
+            )?;
+        }
+        run_hermes(&setup_binary, &setup_profile, &["project", "list"])?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Hermes setup failed: {error}"))??;
+
+    let options = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .read_only(true);
+    let pool = sqlx::SqlitePool::connect_with(options)
+        .await
+        .map_err(|error| format!("Cannot open Hermes Projects: {error}"))?;
+    let folders = sqlx::query_scalar::<_, String>(
+        "SELECT pf.path FROM project_folders pf \
+         JOIN projects p ON p.id = pf.project_id WHERE p.archived = 0",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|error| format!("Cannot read Hermes Projects: {error}"))?;
+    pool.close().await;
+    if folders
+        .iter()
+        .any(|folder| path_is_within(Path::new(&path_arg), Path::new(folder)))
+    {
+        return Ok(());
+    }
+
+    tokio::task::spawn_blocking(move || {
+        run_hermes(
+            &binary,
+            &profile,
+            &[
+                "project",
+                "create",
+                &name,
+                &path_arg,
+                "--primary",
+                &path_arg,
+            ],
+        )
+        .map(|_| ())
+    })
+    .await
+    .map_err(|error| format!("Hermes Project setup failed: {error}"))?
 }
 
 impl CliRunner for HermesRunner {
@@ -94,9 +252,9 @@ impl CliRunner for HermesRunner {
         {
             cmd.push_str(&format!(" --resume \"{}\"", sid));
         }
-        if opts.skip_permissions {
-            cmd.push_str(" --yolo");
-        }
+        // Workbench always uses Hermes smart approvals. Never translate the
+        // shared skip-permissions option into unrestricted --yolo mode.
+        let _ = opts.skip_permissions;
 
         // Hermes reads AGENTS.md. AgentPanel calls agent_inject_purpose before
         // spawn, so consuming the shared option here is intentional.
@@ -214,7 +372,7 @@ mod tests {
         assert_eq!(HERMES.build_spawn_command(&opts(None, false)), "hermes");
         assert_eq!(
             HERMES.build_spawn_command(&opts(Some("20260717_183257_d25185"), true)),
-            "hermes --resume \"20260717_183257_d25185\" --yolo"
+            "hermes --resume \"20260717_183257_d25185\""
         );
     }
 
@@ -231,8 +389,31 @@ mod tests {
         resumed.profile = Some("cozy-engineer".into());
         assert_eq!(
             HERMES.build_spawn_command(&resumed),
-            "hermes --profile \"cozy-engineer\" --resume \"20260717_183257_d25185\" --yolo"
+            "hermes --profile \"cozy-engineer\" --resume \"20260717_183257_d25185\""
         );
+    }
+
+    #[test]
+    fn skip_permissions_never_enables_yolo_for_hermes() {
+        let command = HERMES.build_spawn_command(&opts(None, true));
+        assert_eq!(command, "hermes");
+        assert!(!command.contains("--yolo"));
+    }
+
+    #[test]
+    fn detects_existing_project_folder_without_prefix_collisions() {
+        assert!(path_is_within(
+            Path::new("/work/apps/api/src"),
+            Path::new("/work/apps/api")
+        ));
+        assert!(path_is_within(
+            Path::new("/work/apps/api"),
+            Path::new("/work/apps/api")
+        ));
+        assert!(!path_is_within(
+            Path::new("/work/apps/api-v2"),
+            Path::new("/work/apps/api")
+        ));
     }
 
     #[test]
