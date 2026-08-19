@@ -7,7 +7,7 @@ export const SESSION_PURPOSES = [
   {
     id: 'Development',
     color: '#3fb950',
-    prompt: 'You are in a development session. Follow these rules strictly:\n\nYour process:\n1. Understand what needs to change before touching code\n2. Read existing code first — follow the patterns already in the codebase\n3. Make small, focused changes — one thing at a time\n4. Verify each change works before moving to the next\n5. If requirements are unclear, ask — do not guess',
+    prompt: 'You are working in a ZeroAny Workbench development session. Follow these rules strictly:\n\nYour process:\n1. Understand the requested outcome before changing code\n2. Read the relevant implementation and follow existing project conventions\n3. Make small, focused changes without unrelated refactoring\n4. Run the relevant checks and verify the actual behavior\n5. If a requirement cannot be resolved from the project, ask instead of guessing',
   },
   {
     id: 'Code Review',

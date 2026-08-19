@@ -60,6 +60,17 @@ impl CliRunner for ClaudeRunner {
         if let Some(ref sid) = opts.resume_session_id {
             cmd.push_str(&format!(" --resume \"{}\"", sid));
         }
+        if let Some(title) = opts
+            .session_title
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        {
+            // Single quotes prevent ALL shell interpretation; escape any
+            // embedded single quotes the same way the system prompt does.
+            let escaped = title.replace('\'', "'\\''");
+            cmd.push_str(&format!(" --name '{}'", escaped));
+        }
         if opts.skip_permissions {
             cmd.push_str(" --dangerously-skip-permissions");
         }
@@ -198,3 +209,71 @@ impl CliRunner for ClaudeRunner {
 
 /// Process-wide stateless instance.
 pub static CLAUDE: ClaudeRunner = ClaudeRunner;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_title_becomes_name_flag() {
+        let cmd = CLAUDE.build_spawn_command(&SpawnOpts {
+            resume_session_id: None,
+            system_prompt: None,
+            session_title: Some("登陆中心".to_string()),
+            skip_permissions: false,
+            binary_path_override: None,
+            profile: None,
+            claude_settings_path: None,
+            notify_script_path: None,
+        });
+        assert_eq!(cmd, "claude --name '登陆中心'");
+    }
+
+    #[test]
+    fn session_title_with_quotes_is_shell_escaped() {
+        let cmd = CLAUDE.build_spawn_command(&SpawnOpts {
+            resume_session_id: None,
+            system_prompt: None,
+            session_title: Some("don't break".to_string()),
+            skip_permissions: false,
+            binary_path_override: None,
+            profile: None,
+            claude_settings_path: None,
+            notify_script_path: None,
+        });
+        assert_eq!(cmd, "claude --name 'don'\\''t break'");
+    }
+
+    #[test]
+    fn blank_title_adds_no_flag() {
+        let cmd = CLAUDE.build_spawn_command(&SpawnOpts {
+            resume_session_id: None,
+            system_prompt: None,
+            session_title: Some("   ".to_string()),
+            skip_permissions: false,
+            binary_path_override: None,
+            profile: None,
+            claude_settings_path: None,
+            notify_script_path: None,
+        });
+        assert_eq!(cmd, "claude");
+    }
+
+    #[test]
+    fn title_and_resume_combine() {
+        let cmd = CLAUDE.build_spawn_command(&SpawnOpts {
+            resume_session_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+            system_prompt: None,
+            session_title: Some("MQ改造".to_string()),
+            skip_permissions: false,
+            binary_path_override: None,
+            profile: None,
+            claude_settings_path: None,
+            notify_script_path: None,
+        });
+        assert_eq!(
+            cmd,
+            "claude --resume \"11111111-2222-3333-4444-555555555555\" --name 'MQ改造'"
+        );
+    }
+}

@@ -50,6 +50,11 @@ export const agentUpdateSession = (params: {
 }) => invoke<void>('agent_update_session', params);
 export const agentDeleteSession = (id: string) => invoke<void>('agent_delete_session', { id });
 export const agentUpdateSessionId = (id: string, claudeSessionId: string) => invoke<void>('agent_update_session_id', { id, claudeSessionId });
+/** Push the Workbench session title into the provider's own session store
+ *  (Hermes `sessions rename` — pins `user` provenance so Hermes' first-message
+ *  auto-titling never overwrites it). No-op for other providers; safe to call
+ *  fire-and-forget. */
+export const agentSyncSessionTitle = (id: string) => invoke<void>('agent_sync_session_title', { id });
 export const agentUpdateLastUsed = (id: string) => invoke<void>('agent_update_last_used', { id });
 export const agentUpdateWorktree = (id: string, worktreePath: string | null, worktreeBranch: string | null) => invoke<void>('agent_update_worktree', { id, worktreePath, worktreeBranch });
 export const agentListProfiles = (provider: string) =>
@@ -66,10 +71,9 @@ export const agentInjectContexts = (projectPath: string, contextIds: string[], p
   invoke<void>('agent_inject_contexts', { projectPath, contextIds, provider });
 export const agentRemoveInjectedContexts = (projectPath: string) => invoke<void>('agent_remove_injected_contexts', { projectPath });
 /** Write the session's purpose prompt into the provider's project-level
- *  context file (e.g. GEMINI.md) within a Clauge-managed marker block.
- *  Currently only takes effect for Gemini — every other provider has a
- *  real system-prompt flag and uses it directly at spawn. Safe to call
- *  for any provider; non-Gemini calls are no-ops on the Rust side. */
+ *  context file (e.g. AGENTS.md) within a ZeroAny-managed marker block.
+ *  This applies to Gemini, OpenCode, and Hermes; providers with a native
+ *  system-prompt flag receive the prompt directly at spawn instead. */
 export const agentInjectPurpose = (projectPath: string, provider: string, purposePrompt: string) =>
   invoke<void>('agent_inject_purpose', { projectPath, provider, purposePrompt });
 

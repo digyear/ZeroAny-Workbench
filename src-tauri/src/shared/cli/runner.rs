@@ -31,6 +31,10 @@ pub struct SpawnOpts {
     pub resume_session_id: Option<String>,
     /// System prompt to append when starting / resuming.
     pub system_prompt: Option<String>,
+    /// Workbench session title. Runners with a native session-name flag
+    /// (Claude `--name`) splice it so the provider's own session list
+    /// shows the same name the user picked in Workbench.
+    pub session_title: Option<String>,
     /// Whether to pass the CLI's "skip permission prompts" flag.
     pub skip_permissions: bool,
     /// Per-session absolute path to the CLI binary, overriding the

@@ -36,6 +36,7 @@
     agentWriteToTerminal,
     agentResizeTerminal,
     agentUpdateSessionId,
+    agentSyncSessionTitle,
     agentUpdateLastUsed,
     agentDiscoverSessions,
     agentIsGitRepo,
@@ -1263,13 +1264,23 @@
           // next spawn can target this exact session.
           //   Claude:      `claude --resume <uuid>`
           //   Antigravity: `agy --conversation=<uuid>` or `agy --conversation <uuid>`
-          // Both flow into `claudeSessionId` (column-name legacy — it
+          //   Hermes:      `hermes --resume <id>`
+          // All flow into `claudeSessionId` (column-name legacy — it
           // holds whatever resume id the provider needs).
+          //
+          // ANSI-strip before matching: the Hermes >= 0.20 exit banner
+          // carries color codes and extra hint lines, and raw escape
+          // sequences interleaved with the text would break a plain
+          // regex. This fallback matters more for Hermes than anywhere
+          // else — its state.db row only exists after the first user
+          // message, so a session the user opened but never typed into
+          // is ONLY visible in this banner.
           if (entry && entry._exitBuffer && !session.claudeSessionId) {
+            const stripped = entry._exitBuffer.replace(/\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '');
             const resumeMatch =
-              entry._exitBuffer.match(/claude --resume ([a-f0-9-]{36})/) ||
-              entry._exitBuffer.match(/agy --conversation[ =]([a-f0-9-]{36})/) ||
-              entry._exitBuffer.match(/hermes --resume ([A-Za-z0-9_-]{8,128})/);
+              stripped.match(/claude --resume ([a-f0-9-]{36})/) ||
+              stripped.match(/agy --conversation[ =]([a-f0-9-]{36})/) ||
+              stripped.match(/hermes --resume ([A-Za-z0-9_-]{8,128})/);
             if (resumeMatch) {
               const capturedResumeId = resumeMatch[1];
               session.claudeSessionId = capturedResumeId;
@@ -1280,6 +1291,7 @@
               // and launch a fresh CLI instead of --resume.
               syncCapturedAgentSessionId(session.id, capturedResumeId);
               agentUpdateSessionId(session.id, capturedResumeId).catch(() => {});
+              agentSyncSessionTitle(session.id).catch(() => {});
             }
           }
           if (entry) entry._exitBuffer = '';
@@ -1322,19 +1334,24 @@
         // Check for action-required prompts and notify (per-session)
         handleTerminalOutput(sessionId, payload.data);
 
-        // Accumulate raw output into a rolling 500-char buffer. Used at
-        // PTY-close time to extract the "claude --resume <id>" token as
-        // a fallback resume-id capture when the post-spawn poll didn't
-        // get to discover the .jsonl file. The previous regex-based
-        // "session ended" / farewell detection ran here too, but was
-        // unreliable (matched on any in-response mention of the phrase)
-        // and shipped a misleading banner — removed entirely. PTY-close
-        // (payload.exit === true) and write-failure (line ~418) remain
-        // as the only authoritative exit signals.
+        // Accumulate raw output into a rolling buffer. Used at PTY-close
+        // time to extract the "claude --resume <id>" token as a fallback
+        // resume-id capture when the post-spawn poll didn't get to discover
+        // the session row. Hermes >= 0.20 defers its state.db row until the
+        // first user message, so a session the user never typed into is
+        // ONLY ever captured through this exit banner. The previous
+        // regex-based "session ended" / farewell detection ran here too,
+        // but was unreliable (matched on any in-response mention of the
+        // phrase) and shipped a misleading banner — removed entirely.
+        // PTY-close (payload.exit === true) and write-failure (line ~418)
+        // remain as the only authoritative exit signals.
         if (!entry!._exitBuffer) entry!._exitBuffer = '';
         try {
           entry!._exitBuffer += atob(payload.data);
-          if (entry!._exitBuffer.length > 500) entry!._exitBuffer = entry!._exitBuffer.slice(-500);
+          // 4000 chars: the Hermes exit banner now carries ANSI colors plus
+          // extra hint lines (`hermes -c "<title>" -p <profile>`), so the
+          // 500-char window let the `hermes --resume <id>` line scroll out.
+          if (entry!._exitBuffer.length > 4000) entry!._exitBuffer = entry!._exitBuffer.slice(-4000);
         } catch (_) {}
 
         // Track activity — only mark 'running' if sustained output (not just echo/redraw)
@@ -1364,13 +1381,21 @@
           }, AGENT_ACTIVITY_DONE_MS);
         }
 
-        // Capture session ID — retry every 3s until found (up to 30s)
+        // Capture session ID — retry until found. Hermes >= 0.20 defers its
+        // state.db row until the user's FIRST message, so the old fixed
+        // 30s / 10-attempt window silently missed every session the user
+        // didn't type into immediately; the next reopen then launched a
+        // fresh CLI instead of --resume. Hermes keeps polling for 12
+        // minutes (the exit-banner fallback below still catches sessions
+        // captured after that), other providers keep the original 30s.
         if (!outputReceived && !session.claudeSessionId) {
           outputReceived = true;
           let attempts = 0;
+          const isHermes = (session.provider || 'claude') === 'hermes';
+          const maxAttempts = isHermes ? 240 : 10;
           const captureInterval = setInterval(async () => {
             attempts++;
-            if (attempts > 10 || session.claudeSessionId) { clearInterval(captureInterval); return; }
+            if (attempts > maxAttempts || session.claudeSessionId) { clearInterval(captureInterval); return; }
             try {
               const allSessions = await agentDiscoverSessions(
                 spawnPath,
@@ -1393,6 +1418,10 @@
               if (newSession) {
                 await agentUpdateSessionId(session.id, newSession.sessionId);
                 session.claudeSessionId = newSession.sessionId;
+                // Hermes >= 0.20 auto-titles from the first message; pin
+                // the Workbench title (`user` provenance) right away so the
+                // provider-side list matches our session name.
+                agentSyncSessionTitle(session.id).catch(() => {});
                 await loadAgentSessions();
                 clearInterval(captureInterval);
                 // Release the per-cwd capture lock so any pending

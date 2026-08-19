@@ -192,6 +192,40 @@ pub async fn agent_update_session_id(pool: State<'_, SqlitePool>, id: String, cl
     sessions_repo::update_session_claude_id(pool.inner(), &id, val.as_deref()).await.map_err(|e| e.to_string())
 }
 
+/// Push the Workbench session title into the provider's own session store.
+///
+/// Hermes >= 0.20 auto-titles a session from the first user message, so
+/// without this sync the provider-side session list shows the first prompt
+/// instead of the name the user picked in Workbench. `sessions rename`
+/// records `user` provenance — the highest tier — so Hermes' auto-titling
+/// never overwrites it again. Claude receives its title natively at spawn
+/// (`--name`), so this command is Hermes-only. Best-effort callers wrap it
+/// and ignore errors: a failed rename must never block the terminal.
+pub async fn sync_session_title_to_provider(session: &crate::modes::agent::models::AgentSession) -> Result<(), String> {
+    if session.provider != "hermes" {
+        return Ok(());
+    }
+    let Some(sid) = session.claude_session_id.as_deref().filter(|s| !s.trim().is_empty()) else {
+        return Ok(());
+    };
+    if session.title.trim().is_empty() {
+        return Ok(());
+    }
+    crate::shared::cli::hermes::rename_session_title(
+        session.binary_path.as_deref(),
+        session.profile.as_deref(),
+        sid,
+        &session.title,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn agent_sync_session_title(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+    let session = sessions_repo::get_session_by_id(pool.inner(), &id).await.map_err(|e| e.to_string())?;
+    sync_session_title_to_provider(&session).await
+}
+
 #[tauri::command]
 pub async fn agent_update_last_used(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
@@ -247,14 +281,28 @@ pub async fn agent_detach_context(pool: State<'_, SqlitePool>, session_id: Strin
 // marker block from every known file defensively — handles the case
 // where the user attached the same context to sessions under
 // different providers in the same project.
-const CTX_MARKER_START: &str = "<!-- CLAUGE-CONTEXT-START -->";
-const CTX_MARKER_END: &str = "<!-- CLAUGE-CONTEXT-END -->";
+const CTX_MARKER_START: &str = "<!-- ZEROANY-CONTEXT-START -->";
+const CTX_MARKER_END: &str = "<!-- ZEROANY-CONTEXT-END -->";
+const LEGACY_CTX_MARKER_START: &str = "<!-- CLAUGE-CONTEXT-START -->";
+const LEGACY_CTX_MARKER_END: &str = "<!-- CLAUGE-CONTEXT-END -->";
 // Purpose prompt is its own separate marker pair so it coexists with
-// user-attached contexts (CLAUGE-CONTEXT-*) without either feature
+// user-attached contexts (ZEROANY-CONTEXT-*) without either feature
 // stomping the other's block when one updates and the other doesn't.
-const PURPOSE_MARKER_START: &str = "<!-- CLAUGE-PURPOSE-START -->";
-const PURPOSE_MARKER_END: &str = "<!-- CLAUGE-PURPOSE-END -->";
+const PURPOSE_MARKER_START: &str = "<!-- ZEROANY-PURPOSE-START -->";
+const PURPOSE_MARKER_END: &str = "<!-- ZEROANY-PURPOSE-END -->";
+const LEGACY_PURPOSE_MARKER_START: &str = "<!-- CLAUGE-PURPOSE-START -->";
+const LEGACY_PURPOSE_MARKER_END: &str = "<!-- CLAUGE-PURPOSE-END -->";
 const ALL_CONTEXT_FILES: &[&str] = &["CLAUDE.md", "AGENTS.md", "GEMINI.md"];
+
+fn strip_marker_block(content: &str, start_marker: &str, end_marker: &str) -> String {
+    if let (Some(start), Some(end)) = (content.find(start_marker), content.find(end_marker)) {
+        let before = content[..start].trim_end();
+        let after = &content[end + end_marker.len()..];
+        format!("{}{}", before, after)
+    } else {
+        content.to_string()
+    }
+}
 
 fn context_file_for(provider: &str) -> &'static str {
     match provider {
@@ -267,11 +315,12 @@ fn context_file_for(provider: &str) -> &'static str {
 fn write_injected_context(path: &PathBuf, contexts: &[(String, String)]) -> Result<(), String> {
     let existing_content = if path.exists() {
         let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        if let (Some(start), Some(_end)) = (raw.find(CTX_MARKER_START), raw.find(CTX_MARKER_END)) {
-            raw[..start].trim_end().to_string()
-        } else {
-            raw
-        }
+        let without_current = strip_marker_block(&raw, CTX_MARKER_START, CTX_MARKER_END);
+        strip_marker_block(
+            &without_current,
+            LEGACY_CTX_MARKER_START,
+            LEGACY_CTX_MARKER_END,
+        )
     } else {
         String::new()
     };
@@ -338,8 +387,13 @@ pub fn agent_remove_injected_contexts(project_path: String) -> Result<(), String
             Err(_) => continue,
         };
 
-        if let (Some(start), Some(end)) = (content.find(CTX_MARKER_START), content.find(CTX_MARKER_END)) {
-            let cleaned = format!("{}{}", &content[..start].trim_end(), &content[end + CTX_MARKER_END.len()..]);
+        let without_current = strip_marker_block(&content, CTX_MARKER_START, CTX_MARKER_END);
+        let cleaned = strip_marker_block(
+            &without_current,
+            LEGACY_CTX_MARKER_START,
+            LEGACY_CTX_MARKER_END,
+        );
+        if cleaned != content {
             if cleaned.trim().is_empty() {
                 let _ = std::fs::remove_file(&path);
             } else {
@@ -351,7 +405,7 @@ pub fn agent_remove_injected_contexts(project_path: String) -> Result<(), String
 }
 
 /// Write the session's purpose prompt into the provider's project-level
-/// context file inside `<!-- CLAUGE-PURPOSE-START --> … <!-- CLAUGE-PURPOSE-END -->`.
+/// context file inside `<!-- ZEROANY-PURPOSE-START --> … <!-- ZEROANY-PURPOSE-END -->`.
 ///
 /// Background: every other supported CLI exposes a real system-prompt
 /// flag (Claude `--append-system-prompt`, Codex `-c instructions=…`).
@@ -371,18 +425,15 @@ pub fn agent_remove_injected_contexts(project_path: String) -> Result<(), String
 /// use different marker pairs.
 fn write_injected_purpose(path: &PathBuf, purpose_text: &str) -> Result<(), String> {
     let trimmed = purpose_text.trim();
-    // Read existing file, stripping any prior CLAUGE-PURPOSE block.
+    // Read existing file, stripping both current and legacy purpose blocks.
     let existing = if path.exists() {
         let raw = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        if let (Some(start), Some(end)) =
-            (raw.find(PURPOSE_MARKER_START), raw.find(PURPOSE_MARKER_END))
-        {
-            let before = raw[..start].trim_end();
-            let after = &raw[end + PURPOSE_MARKER_END.len()..];
-            format!("{}{}", before, after)
-        } else {
-            raw
-        }
+        let without_current = strip_marker_block(&raw, PURPOSE_MARKER_START, PURPOSE_MARKER_END);
+        strip_marker_block(
+            &without_current,
+            LEGACY_PURPOSE_MARKER_START,
+            LEGACY_PURPOSE_MARKER_END,
+        )
     } else {
         String::new()
     };
@@ -570,7 +621,7 @@ mod purpose_tests {
     #[test]
     fn hermes_purpose_is_written_to_agents_md() {
         let dir = std::env::temp_dir().join(format!(
-            "clauge-hermes-purpose-{}",
+            "zeroany-hermes-purpose-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&dir).unwrap();
@@ -585,9 +636,39 @@ mod purpose_tests {
 
         let content = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
         assert!(content.contains("# Existing project guidance"));
-        assert!(content.contains("<!-- CLAUGE-PURPOSE-START -->"));
+        assert!(content.contains("<!-- ZEROANY-PURPOSE-START -->"));
         assert!(content.contains("Review before editing"));
-        assert!(content.contains("<!-- CLAUGE-PURPOSE-END -->"));
+        assert!(content.contains("<!-- ZEROANY-PURPOSE-END -->"));
+        assert!(!content.contains("CLAUGE"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn legacy_purpose_marker_is_migrated_without_duplication() {
+        let dir = std::env::temp_dir().join(format!(
+            "zeroany-legacy-purpose-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("AGENTS.md"),
+            "# Existing project guidance\n\n<!-- CLAUGE-PURPOSE-START -->\n\nOld prompt\n\n<!-- CLAUGE-PURPOSE-END -->\n",
+        )
+        .unwrap();
+
+        agent_inject_purpose(
+            dir.to_string_lossy().into_owned(),
+            "hermes".into(),
+            "New prompt".into(),
+        )
+        .unwrap();
+
+        let content = std::fs::read_to_string(dir.join("AGENTS.md")).unwrap();
+        assert!(content.contains("# Existing project guidance"));
+        assert!(content.contains("<!-- ZEROANY-PURPOSE-START -->"));
+        assert!(content.contains("New prompt"));
+        assert!(!content.contains("Old prompt"));
+        assert!(!content.contains("CLAUGE"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -70,15 +70,26 @@ fn normalized_project_path(path: &str) -> Result<PathBuf, String> {
     }
 }
 
-fn path_is_within(path: &Path, folder: &Path) -> bool {
-    #[cfg(windows)]
-    {
-        let path = path.to_string_lossy().to_lowercase();
-        let folder = folder.to_string_lossy().to_lowercase();
-        return Path::new(&path).starts_with(Path::new(&folder));
-    }
-    #[cfg(not(windows))]
-    path.starts_with(folder)
+#[cfg(windows)]
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
+#[cfg(not(windows))]
+fn paths_equal(left: &Path, right: &Path) -> bool {
+    left == right
+}
+
+fn has_native_project_for_root(rows: &[(String, String)], root: &Path) -> bool {
+    rows.iter().any(|(primary_path, primary_folder)| {
+        let primary = if primary_path.trim().is_empty() {
+            primary_folder
+        } else {
+            primary_path
+        };
+        !primary.trim().is_empty() && paths_equal(Path::new(primary), root)
+    })
 }
 
 fn run_hermes(binary: &str, profile: &str, args: &[&str]) -> Result<Output, String> {
@@ -176,18 +187,16 @@ pub(crate) async fn prepare_native_project(
     let pool = sqlx::SqlitePool::connect_with(options)
         .await
         .map_err(|error| format!("Cannot open Hermes Projects: {error}"))?;
-    let folders = sqlx::query_scalar::<_, String>(
-        "SELECT pf.path FROM project_folders pf \
-         JOIN projects p ON p.id = pf.project_id WHERE p.archived = 0",
+    let projects = sqlx::query_as::<_, (String, String)>(
+        "SELECT COALESCE(p.primary_path, ''), COALESCE(pf.path, '') \
+         FROM projects p LEFT JOIN project_folders pf \
+         ON pf.project_id = p.id AND pf.is_primary = 1 WHERE p.archived = 0",
     )
     .fetch_all(&pool)
     .await
     .map_err(|error| format!("Cannot read Hermes Projects: {error}"))?;
     pool.close().await;
-    if folders
-        .iter()
-        .any(|folder| path_is_within(Path::new(&path_arg), Path::new(folder)))
-    {
+    if has_native_project_for_root(&projects, &path) {
         return Ok(());
     }
 
@@ -262,6 +271,10 @@ impl CliRunner for HermesRunner {
         // Hermes reads AGENTS.md. AgentPanel calls agent_inject_purpose before
         // spawn, so consuming the shared option here is intentional.
         let _ = &opts.system_prompt;
+        // Hermes has no spawn-time session-name flag; the Workbench title is
+        // synced via `sessions rename` after the session id is captured / on
+        // every resume (see `apply_session_title`).
+        let _ = &opts.session_title;
         cmd
     }
 
@@ -356,6 +369,67 @@ impl CliRunner for HermesRunner {
     }
 }
 
+/// Sanitize a Workbench session title before handing it to Hermes.
+/// Mirrors Hermes' own `SessionDB.sanitize_title` contract: control chars
+/// out, whitespace collapsed, `MAX_TITLE_LENGTH` (100) enforced.
+fn sanitize_hermes_title(title: &str) -> Option<String> {
+    let cleaned: String = title
+        .chars()
+        .filter(|c| *c != '\u{7f}' && !c.is_ascii_control())
+        .collect();
+    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    Some(collapsed.chars().take(100).collect())
+}
+
+/// Sync the Workbench session title into a Hermes session row.
+///
+/// Hermes >= 0.20 auto-titles a session from the user's first message, so a
+/// session spawned from Workbench ends up carrying the first prompt as its
+/// title instead of the name the user picked. `sessions rename` records
+/// `user` provenance, which auto-titling never overrides — so calling this
+/// once after the session id is captured (and on every resume) pins our
+/// title permanently.
+pub(crate) async fn rename_session_title(
+    binary_override: Option<&str>,
+    profile: Option<&str>,
+    session_id: &str,
+    title: &str,
+) -> Result<(), String> {
+    let profile = profile
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("default")
+        .to_string();
+    if !is_safe_profile_name(&profile) {
+        return Err(format!("Invalid Hermes profile name: {profile}"));
+    }
+    if !is_safe_session_id(session_id) {
+        return Err(format!("Invalid Hermes session id: {session_id}"));
+    }
+    let Some(title) = sanitize_hermes_title(title) else {
+        return Ok(());
+    };
+    let session_id = session_id.to_string();
+    let binary = binary_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| HERMES.resolve_binary_path());
+    tokio::task::spawn_blocking(move || {
+        run_hermes(
+            &binary,
+            &profile,
+            &["sessions", "rename", &session_id, &title],
+        )
+        .map(|_| ())
+    })
+    .await
+    .map_err(|error| format!("Hermes title sync failed: {error}"))?
+}
+
 pub static HERMES: HermesRunner = HermesRunner;
 
 #[cfg(test)]
@@ -403,18 +477,25 @@ mod tests {
     }
 
     #[test]
-    fn detects_existing_project_folder_without_prefix_collisions() {
-        assert!(path_is_within(
-            Path::new("/work/apps/api/src"),
-            Path::new("/work/apps/api")
+    fn only_primary_project_root_prevents_native_project_creation() {
+        let rows = vec![
+            (
+                "/work/temporary-workspace".to_string(),
+                "/work/repos/api".to_string(),
+            ),
+            (
+                "/work/repos/web".to_string(),
+                "/work/repos/web".to_string(),
+            ),
+        ];
+
+        assert!(!has_native_project_for_root(
+            &rows,
+            Path::new("/work/repos/api")
         ));
-        assert!(path_is_within(
-            Path::new("/work/apps/api"),
-            Path::new("/work/apps/api")
-        ));
-        assert!(!path_is_within(
-            Path::new("/work/apps/api-v2"),
-            Path::new("/work/apps/api")
+        assert!(has_native_project_for_root(
+            &rows,
+            Path::new("/work/repos/web")
         ));
     }
 
@@ -442,6 +523,19 @@ mod tests {
                 )
                 .as_deref(),
             Some("20260717_183257_d25185")
+        );
+    }
+
+    #[test]
+    fn sanitize_hermes_title_strips_controls_and_collapses_whitespace() {
+        assert_eq!(
+            sanitize_hermes_title("  登陆中心  \n  MQ改造 ").as_deref(),
+            Some("登陆中心 MQ改造")
+        );
+        assert_eq!(sanitize_hermes_title("   \u{07}\t  "), None);
+        assert_eq!(
+            sanitize_hermes_title(&"x".repeat(250)).map(|t| t.len()),
+            Some(100)
         );
     }
 }

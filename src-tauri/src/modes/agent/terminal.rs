@@ -1,6 +1,6 @@
 use crate::companion::fanout;
 use crate::modes::agent::models::{TerminalEntry, TerminalOutputPayload, TerminalState};
-use crate::shared::repos::{sessions as sessions_repo, settings as settings_repo};
+use crate::shared::repos::settings as settings_repo;
 use crate::shared::cli::{registry::runner_for, runner::{CliRunner, SpawnOpts}};
 use crate::shared::platform::shell::default_user_shell;
 use base64::Engine;
@@ -26,6 +26,21 @@ fn apply_windows_env(cmd: &mut CommandBuilder) {
 
 #[cfg(not(target_os = "windows"))]
 fn apply_windows_env(_cmd: &mut CommandBuilder) {}
+
+fn apply_agent_process_env(cmd: &mut CommandBuilder, provider: &str) {
+    if provider != "hermes" {
+        return;
+    }
+
+    // ZeroAny itself may have been launched from Hermes Desktop. Do not pass
+    // that parent surface identity into the nested Hermes CLI: Desktop treats
+    // its launch cwd as incidental and deliberately persists a NULL cwd, which
+    // leaves the session outside every native Project. This PTY is a real CLI
+    // launched in the user-selected workspace.
+    cmd.env("HERMES_SESSION_SOURCE", "cli");
+    cmd.env_remove("HERMES_DESKTOP");
+    cmd.env_remove("HERMES_DESKTOP_TERMINAL");
+}
 
 #[tauri::command]
 pub async fn agent_spawn_terminal(
@@ -110,25 +125,15 @@ pub(crate) async fn spawn_agent_terminal_impl(
     let cli: &dyn CliRunner = runner_for(&provider);
 
     if provider == "hermes" {
-        let stored = if let Some(row_id) = session_ref.as_deref() {
-            sessions_repo::get_session_by_id(pool, row_id).await.ok()
-        } else {
-            None
-        };
-        let (native_path, native_name) = if let Some(session) = stored {
-            (
-                session.project_root.unwrap_or(session.project_path),
-                session.project_name,
-            )
-        } else {
-            let identity = crate::modes::agent::worktree::resolve_project_identity(&project_path);
-            (identity.project_root, identity.project_name)
-        };
+        // Resolve the actual launch cwd instead of trusting persisted metadata:
+        // linked worktrees must register their main checkout as the native
+        // Hermes Project, never the per-session worktree directory.
+        let identity = crate::modes::agent::worktree::resolve_project_identity(&project_path);
         crate::shared::cli::hermes::prepare_native_project(
             binary_path.as_deref(),
             profile.as_deref(),
-            &native_path,
-            &native_name,
+            &identity.project_root,
+            &identity.project_name,
         )
         .await?;
     }
@@ -163,9 +168,21 @@ pub(crate) async fn spawn_agent_terminal_impl(
         .filter(|_| provider == "codex")
         .and_then(|_| crate::modes::agent::hooks::notify_script_path());
 
+    let session_row = if let Some(row_id) = session_ref.as_deref() {
+        crate::shared::repos::sessions::get_session_by_id(pool, row_id)
+            .await
+            .ok()
+    } else {
+        None
+    };
+
     let spawn_cmd = cli.build_spawn_command(&SpawnOpts {
-        resume_session_id,
+        resume_session_id: resume_session_id.clone(),
         system_prompt: context_prompt,
+        session_title: session_row
+            .as_ref()
+            .map(|row| row.title.clone())
+            .filter(|title| !title.trim().is_empty()),
         skip_permissions: skip_permissions.unwrap_or(false),
         binary_path_override: binary_path
             .as_deref()
@@ -181,6 +198,26 @@ pub(crate) async fn spawn_agent_terminal_impl(
         notify_script_path: cli_notify_path,
     });
 
+    // Hermes >= 0.20 auto-titles sessions from the first user message. On a
+    // resume spawn, re-assert the Workbench title in the background (rename
+    // writes `user` provenance, which auto-titling never overrides). This
+    // also retro-syncs sessions captured before title sync existed.
+    if provider == "hermes" && resume_session_id.is_some() {
+        if let Some(row) = session_row.as_ref() {
+            if !row.title.trim().is_empty() {
+                let sync_row = row.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        crate::modes::agent::commands::sync_session_title_to_provider(&sync_row)
+                            .await
+                    {
+                        log::warn!(target: "agent::terminal", "Hermes title sync on resume failed: {e}");
+                    }
+                });
+            }
+        }
+    }
+
     let (shell_path, shell_kind) = default_user_shell();
     let mut cmd = CommandBuilder::new(&shell_path);
     // For bash/zsh: -l (login) sources ~/.zprofile but tools like nvm/fnm/asdf
@@ -192,6 +229,7 @@ pub(crate) async fn spawn_agent_terminal_impl(
     cmd.cwd(&project_path);
     if let Some(home) = dirs::home_dir() { cmd.env("HOME", home.to_string_lossy().to_string()); }
     apply_windows_env(&mut cmd);
+    apply_agent_process_env(&mut cmd, &provider);
     cmd.env("TERM", "xterm-256color");
     if let Some(ref name) = git_name { cmd.env("GIT_AUTHOR_NAME", name); cmd.env("GIT_COMMITTER_NAME", name); }
     if let Some(ref email) = git_email { cmd.env("GIT_AUTHOR_EMAIL", email); cmd.env("GIT_COMMITTER_EMAIL", email); }
@@ -446,4 +484,35 @@ pub fn agent_kill_terminal(state: State<'_, TerminalState>, terminal_id: String)
     // Tear down any codex log watcher + its temp log for this terminal.
     crate::modes::agent::hooks::stop_codex_watcher(&terminal_id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_hermes_is_stamped_as_workspace_cli() {
+        let mut cmd = CommandBuilder::new("hermes");
+        cmd.env("HERMES_SESSION_SOURCE", "desktop");
+        cmd.env("HERMES_DESKTOP", "1");
+        cmd.env("HERMES_DESKTOP_TERMINAL", "1");
+
+        apply_agent_process_env(&mut cmd, "hermes");
+
+        assert_eq!(cmd.get_env("HERMES_SESSION_SOURCE"), Some("cli".as_ref()));
+        assert_eq!(cmd.get_env("HERMES_DESKTOP"), None);
+        assert_eq!(cmd.get_env("HERMES_DESKTOP_TERMINAL"), None);
+    }
+
+    #[test]
+    fn other_agents_keep_parent_surface_environment() {
+        let mut cmd = CommandBuilder::new("claude");
+        cmd.env("HERMES_SESSION_SOURCE", "desktop");
+        cmd.env("HERMES_DESKTOP", "1");
+
+        apply_agent_process_env(&mut cmd, "claude");
+
+        assert_eq!(cmd.get_env("HERMES_SESSION_SOURCE"), Some("desktop".as_ref()));
+        assert_eq!(cmd.get_env("HERMES_DESKTOP"), Some("1".as_ref()));
+    }
 }

@@ -45,3 +45,4 @@ package-lock.json
 # Local build helpers
 Dockerfile.build
 docker-compose.build.yml
+.zeroany-worktrees/
