@@ -65,7 +65,6 @@ If your tooling adds the trailer automatically (Claude Code, Cursor, etc.), stri
 4. Ensure `cargo check` passes in `src-tauri/`
 5. Author your commits as a human (see [Commit Authorship](#commit-authorship))
 6. Open a pull request using the PR template
-7. Sign the CLA on your first PR (the CLA Assistant bot will prompt you)
 
 ## Code Style
 
@@ -77,6 +76,6 @@ If your tooling adds the trailer automatically (Claude Code, Cursor, etc.), stri
 
 Open issues through the [issue chooser](https://github.com/ClaugeHQ/Clauge/issues/new/choose) — it will route you into the correct template (bug report, feature request, etc.). Blank issues are disabled on purpose: a structured report saves everyone time.
 
-## License & CLA
+## License
 
-This project is licensed under the [PolyForm Noncommercial License 1.0.0](../LICENSE). Contributions are governed by the [Contributor License Agreement](../CLA.md), which you accept by opening a pull request.
+This project is licensed under the [Apache License 2.0](../LICENSE). By contributing, you agree that your contributions will be licensed under the same terms.

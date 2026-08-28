@@ -13,7 +13,7 @@
 
 <p align="center">
   <a href="https://github.com/digyear/ZeroAny-Workbench/releases/latest"><img src="https://img.shields.io/github/v/release/digyear/ZeroAny-Workbench?style=flat-square&color=ff5436&label=latest" alt="Release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-7c5cf8?style=flat-square" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-7c5cf8?style=flat-square" alt="License"></a>
   <a href="https://github.com/digyear/ZeroAny-Workbench/stargazers"><img src="https://img.shields.io/github/stars/digyear/ZeroAny-Workbench?style=flat-square&color=f5a623" alt="Stars"></a>
   <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri-CE422B?style=flat-square" alt="Rust + Tauri">
   <img src="https://img.shields.io/badge/binary-~25%20MB-4f94d4?style=flat-square" alt="~20 MB">
@@ -36,9 +36,8 @@
 ---
 
 > [!IMPORTANT]
-> **ZeroAny Workbench is an independent, non-commercial developer product under the
-> ZeroAny brand.** The original copyright notices and PolyForm Noncommercial License
-> 1.0.0 remain in effect.
+> **ZeroAny Workbench is an independent, open-source developer product under the
+> ZeroAny brand.** The project is licensed under the Apache License 2.0.
 
 ---
 
@@ -261,6 +260,6 @@ Opt-in, encrypted.Agent Context, Co-Worker Profil, REST collections,SQL/NoSQL an
 
 ## License
 
-This project is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE) .
+This project is licensed under the [Apache License 2.0](LICENSE).
 
-Contributions require signing a Contributor License Agreement (CLA). See [Contributor License Agreement](CLA.md) for details.
+Contributions are welcome under the terms of the [Apache License 2.0](LICENSE).
