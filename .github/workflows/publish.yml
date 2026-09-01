@@ -97,11 +97,15 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "CMAKE_GENERATOR=Ninja"
 
       - name: Import Apple certificate
-        if: runner.os == 'macOS' && secrets.APPLE_CERTIFICATE != ''
+        if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "No Apple certificate configured, skipping (ad-hoc signing will be used)"
+            exit 0
+          fi
           CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
           KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
           echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
