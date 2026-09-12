@@ -586,6 +586,7 @@ pub fn run() {
             modes::agent::usage::agent_scan_discovered_sessions,
             modes::agent::usage::agent_list_discovered_sessions,
             modes::agent::usage::agent_hide_discovered_session,
+            modes::agent::usage::agent_rename_discovered_session,
             modes::agent::usage::agent_unhide_discovered_session,
             modes::agent::usage::agent_adopt_discovered_session,
             modes::agent::usage::agent_get_session_tokens,

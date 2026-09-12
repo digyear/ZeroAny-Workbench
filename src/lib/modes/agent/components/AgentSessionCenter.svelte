@@ -7,6 +7,7 @@
     agentFsReveal,
     agentHideDiscoveredSession,
     agentListDiscoveredSessions,
+    agentRenameDiscoveredSession,
     agentResolveProjectRoots,
     agentScanDiscoveredSessions,
     agentUnhideDiscoveredSession,
@@ -46,6 +47,11 @@
   let selectedProject = $state('all');
   let selectedIds = $state<string[]>([]);
   let visibleLimit = $state(100);
+  // Inline rename state for discovered sessions. Provider auto-titles
+  // (e.g. Hermes' first-message title) are often meaningless, so the
+  // user can pin a local name that rescans never overwrite.
+  let renamingId = $state<string | null>(null);
+  let renameDraft = $state('');
 
   function sessionStatus(session: AgentDiscoveredSession): Exclude<StatusFilter, 'all'> {
     if (session.hidden) return 'hidden';
@@ -91,6 +97,7 @@
         if (!needle) return true;
         const root = canonicalProjectPath(session);
         return [
+          session.userTitle,
           session.title,
           session.preview,
           session.externalSessionId,
@@ -176,7 +183,7 @@
   }
 
   function sessionTitle(session: AgentDiscoveredSession): string {
-    return session.title || session.preview || session.externalSessionId;
+    return session.userTitle || session.title || session.preview || session.externalSessionId;
   }
 
   function setBusy(id: string, busy: boolean) {
@@ -255,6 +262,35 @@
       await loadAgentDiscoveredSessions();
     } catch (error) {
       showToast(`${hidden ? 'Hide' : 'Restore'} failed: ${friendlyError(error)}`, 'error');
+    } finally {
+      setBusy(session.id, false);
+    }
+  }
+
+  function startRename(session: AgentDiscoveredSession) {
+    renamingId = session.id;
+    renameDraft = session.userTitle || session.title || '';
+  }
+
+  function cancelRename() {
+    renamingId = null;
+    renameDraft = '';
+  }
+
+  async function commitRename(session: AgentDiscoveredSession) {
+    const trimmed = renameDraft.trim();
+    if (!trimmed || busyIds.includes(session.id)) {
+      cancelRename();
+      return;
+    }
+    setBusy(session.id, true);
+    try {
+      await agentRenameDiscoveredSession(session.id, trimmed);
+      catalog = catalog.map((item) => item.id === session.id ? { ...item, userTitle: trimmed } : item);
+      cancelRename();
+      await loadAgentDiscoveredSessions();
+    } catch (error) {
+      showToast(`Rename failed: ${friendlyError(error)}`, 'error');
     } finally {
       setBusy(session.id, false);
     }
@@ -410,12 +446,27 @@
               <div class="sc-session-main">
                 <div class="sc-session-title">
                   <img src={providerIcon(session.provider)} alt="" />
-                  <strong title={sessionTitle(session)}>{sessionTitle(session)}</strong>
+                  {#if renamingId === session.id}
+                    <input
+                      class="sc-rename-input"
+                      bind:value={renameDraft}
+                      maxlength="100"
+                      aria-label="Rename session"
+                      onkeydown={(e) => {
+                        if (e.key === 'Enter') commitRename(session);
+                        else if (e.key === 'Escape') cancelRename();
+                      }}
+                      onblur={() => commitRename(session)}
+                    />
+                  {:else}
+                    <strong title={sessionTitle(session)}>{sessionTitle(session)}</strong>
+                  {/if}
                   <span class="sc-provider">{providerName(session.provider)}</span>
                   {#if session.profile}<span class="sc-profile" title="Hermes profile">{session.profile}</span>{/if}
+                  {#if session.userTitle}<span class="sc-renamed" title="Locally renamed">renamed</span>{/if}
                   <span class="sc-state {rowStatus}">{rowStatus}</span>
                 </div>
-                {#if session.preview && session.preview !== session.title}<p>{session.preview}</p>{/if}
+                {#if session.preview && session.preview !== session.title && session.preview !== session.userTitle}<p>{session.preview}</p>{/if}
                 <code title={session.externalSessionId}>{session.externalSessionId}</code>
               </div>
               <div class="sc-row-project" title={root === '__unscoped__' ? (session.projectPath || '') : root}>
@@ -424,6 +475,9 @@
               </div>
               <time title={new Date(session.updatedAt).toLocaleString()}>{relativeTime(session.updatedAt)}</time>
               <div class="sc-row-actions">
+                {#if renamingId !== session.id}
+                  <button onclick={() => startRename(session)}>Rename</button>
+                {/if}
                 {#if rowStatus === 'external'}
                   <button class="primary" disabled={busyIds.includes(session.id)} onclick={() => adopt(session)}>Open in ZeroAny Workbench</button>
                   <button disabled={!session.projectPath} onclick={() => session.projectPath && agentFsReveal(session.projectPath)}>Reveal</button>
@@ -515,6 +569,9 @@
   .sc-state.external { color:#d29922; background:rgba(210,153,34,.12); }
   .sc-state.managed { color:#3fb950; background:rgba(63,185,80,.12); }
   .sc-state.hidden { color:var(--t4); background:var(--n2); }
+  .sc-renamed { flex:none; border-radius:3px; padding:1px 4px; font-size:8px; font-weight:700; color:var(--acc); background:color-mix(in srgb, var(--acc) 10%, var(--n2)); border:1px solid color-mix(in srgb, var(--acc) 28%, var(--b1)); }
+  .sc-rename-input { min-width:0; flex:1; max-width:260px; height:22px; border:1px solid color-mix(in srgb, var(--acc) 55%, var(--b1)); border-radius:4px; background:var(--n2); color:var(--t1); padding:0 6px; font:inherit; font-size:11.5px; outline:0; }
+  .sc-rename-input:focus { border-color:var(--acc); }
   .sc-session-main p { margin:4px 0 2px 24px; color:var(--t3); font-size:9.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .sc-session-main code { display:block; margin-left:24px; color:var(--t4); font:8.5px var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .sc-row-project { display:flex; flex-direction:column; gap:3px; }

@@ -89,7 +89,7 @@ pub async fn get_by_provider_profile_external(
 ) -> Result<AgentDiscoveredSession, sqlx::Error> {
     sqlx::query_as::<_, AgentDiscoveredSession>(
         "SELECT id, provider, NULLIF(profile, '') AS profile, external_session_id,
-                project_path, project_root, project_name, title, preview,
+                project_path, project_root, project_name, title, user_title, preview,
                 created_at, updated_at, last_seen_at, parent_external_session_id,
                 session_kind, source_path, hidden, hidden_at, adopted_agent_session_id
          FROM agent_discovered_sessions
@@ -134,6 +134,7 @@ pub async fn list_discovered_sessions(
              discovered.project_root,
              discovered.project_name,
              discovered.title,
+             discovered.user_title,
              discovered.preview,
              discovered.created_at,
              discovered.updated_at,
@@ -169,7 +170,7 @@ pub async fn list_discovered_sessions(
                 OR COALESCE(discovered.project_name, '') LIKE ?
                 OR COALESCE(discovered.project_path, '') LIKE ?
                 OR COALESCE(discovered.project_root, '') LIKE ?
-                OR COALESCE(discovered.title, '') LIKE ?
+                OR COALESCE(discovered.user_title, discovered.title, '') LIKE ?
                 OR COALESCE(discovered.preview, '') LIKE ?
                 OR COALESCE(discovered.profile, '') LIKE ?
            )
@@ -192,6 +193,34 @@ pub async fn list_discovered_sessions(
     .bind(search_like.as_deref())
     .fetch_all(pool)
     .await
+}
+
+/// Set or clear the local display name for a discovered session. An empty
+/// or whitespace-only title clears the override (falls back to the
+/// provider-supplied title). The column is never written by the discovery
+/// upsert, so rescans cannot clobber the user's choice.
+pub async fn set_user_title(
+    pool: &SqlitePool,
+    id: &str,
+    title: &str,
+) -> Result<(), sqlx::Error> {
+    let trimmed = title.trim();
+    let value = if trimmed.is_empty() {
+        None
+    } else {
+        // Mirror Hermes' MAX_TITLE_LENGTH contract.
+        Some(trimmed.chars().take(100).collect::<String>())
+    };
+    sqlx::query(
+        "UPDATE agent_discovered_sessions
+         SET user_title = ?
+         WHERE id = ?",
+    )
+    .bind(value)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub async fn set_hidden(
@@ -237,6 +266,7 @@ mod tests {
                 project_root TEXT,
                 project_name TEXT,
                 title TEXT,
+                user_title TEXT,
                 preview TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -309,6 +339,52 @@ mod tests {
         assert_eq!(row.project_root.as_deref(), Some("/repo"));
         assert_eq!(row.updated_at, "2026-01-02T00:00:00Z");
         assert_eq!(row.last_seen_at, "2026-01-03T00:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn user_rename_survives_provider_rescan() {
+        let pool = memory_pool().await;
+        let base = DiscoveredSessionUpsert {
+            provider: "hermes".into(),
+            profile: Some("default".into()),
+            external_session_id: "sid-r".into(),
+            project_path: Some("/repo".into()),
+            project_root: Some("/repo".into()),
+            project_name: Some("repo".into()),
+            title: Some("Friendly greeting".into()),
+            preview: None,
+            created_at: Some("2026-01-01T00:00:00Z".into()),
+            updated_at: Some("2026-01-01T00:00:00Z".into()),
+            last_seen_at: "2026-01-01T00:00:00Z".into(),
+            parent_external_session_id: None,
+            session_kind: Some("conversation".into()),
+            source_path: None,
+        };
+        let first = upsert_discovered_session(&pool, &base).await.unwrap();
+
+        // User pins a meaningful local name.
+        set_user_title(&pool, &first.id, "Shopify SDK cleanup").await.unwrap();
+
+        // A later rescan re-reports the provider auto-title. The upsert
+        // must refresh `title` but never touch `user_title`.
+        let rescan = DiscoveredSessionUpsert {
+            title: Some("User says hello".into()),
+            updated_at: Some("2026-01-02T00:00:00Z".into()),
+            last_seen_at: "2026-01-02T00:00:00Z".into(),
+            ..base
+        };
+        let row = upsert_discovered_session(&pool, &rescan).await.unwrap();
+
+        assert_eq!(row.title.as_deref(), Some("User says hello"));
+        assert_eq!(row.user_title.as_deref(), Some("Shopify SDK cleanup"));
+
+        // An empty rename clears the override, falling back to provider title.
+        set_user_title(&pool, &first.id, "   ").await.unwrap();
+        let cleared = get_by_provider_profile_external(&pool, "hermes", "default", "sid-r")
+            .await
+            .unwrap();
+        assert_eq!(cleared.user_title, None);
+        assert_eq!(cleared.title.as_deref(), Some("User says hello"));
     }
 
     #[tokio::test]

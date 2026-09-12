@@ -204,6 +204,8 @@ export const agentListDiscoveredSessions = (params: {
 } = {}) => invoke<AgentDiscoveredSession[]>('agent_list_discovered_sessions', params);
 export const agentHideDiscoveredSession = (id: string) =>
   invoke<void>('agent_hide_discovered_session', { id });
+export const agentRenameDiscoveredSession = (id: string, title: string) =>
+  invoke<void>('agent_rename_discovered_session', { id, title });
 export const agentUnhideDiscoveredSession = (id: string) =>
   invoke<void>('agent_unhide_discovered_session', { id });
 export const agentAdoptDiscoveredSession = (id: string) =>

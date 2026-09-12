@@ -99,6 +99,9 @@ pub struct AgentDiscoveredSession {
     pub project_root: Option<String>,
     pub project_name: Option<String>,
     pub title: Option<String>,
+    /// Locally chosen name. Displayed ahead of the provider-supplied
+    /// `title`, and never overwritten by a discovery rescan.
+    pub user_title: Option<String>,
     pub preview: Option<String>,
     pub created_at: String,
     pub updated_at: String,

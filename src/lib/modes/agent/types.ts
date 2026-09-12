@@ -79,6 +79,8 @@ export interface AgentDiscoveredSession {
   projectRoot: string | null;
   projectName: string | null;
   title: string | null;
+  /** Locally chosen display name; wins over `title` when present. */
+  userTitle: string | null;
   preview: string | null;
   createdAt: string;
   updatedAt: string;

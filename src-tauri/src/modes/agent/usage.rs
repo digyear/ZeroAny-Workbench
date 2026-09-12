@@ -833,6 +833,20 @@ pub async fn agent_hide_discovered_session(
 }
 
 #[tauri::command]
+pub async fn agent_rename_discovered_session(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    title: String,
+) -> Result<(), String> {
+    if title.trim().is_empty() {
+        return Err("Title cannot be empty".to_string());
+    }
+    discovered_repo::set_user_title(pool.inner(), &id, &title)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn agent_unhide_discovered_session(
     pool: State<'_, SqlitePool>,
     id: String,
@@ -920,8 +934,10 @@ pub async fn adopt_discovered_session_by_id(
             .or_else(|| project_name_from_path_opt(Some(project_path)))
             .unwrap_or_else(|| "Unknown".to_string());
         let title = discovered
-            .title
+            .user_title
             .clone()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| discovered.title.clone())
             .or_else(|| discovered.preview.clone())
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| format!("{} external session", provider));
@@ -3859,6 +3875,7 @@ mod discovery_tests {
                 project_root TEXT,
                 project_name TEXT,
                 title TEXT,
+                user_title TEXT,
                 preview TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
