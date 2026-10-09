@@ -39,6 +39,7 @@
     agentSyncSessionTitle,
     agentUpdateLastUsed,
     agentDiscoverSessions,
+    agentResolveSessionTip,
     agentIsGitRepo,
     agentGitBranch,
     agentCreateWorktree,
@@ -54,6 +55,7 @@
     agentCheckCliInstalled,
   } from '../commands';
   import ProviderNotInstalledModal from '$lib/shared/agent/ProviderNotInstalledModal.svelte';
+  import ConfirmDialog from '$lib/shared/primitives/ConfirmDialog.svelte';
   import AgentFileExplorer from './AgentFileExplorer.svelte';
   import AgentFileEditor from './AgentFileEditor.svelte';
   import AgentSessionCenter from './AgentSessionCenter.svelte';
@@ -390,6 +392,35 @@
 
   let showNotInstalled = $state(false);
   let notInstalledProvider = $state<'claude' | 'codex' | 'gemini' | 'opencode' | 'hermes'>('claude');
+
+  // --- Compression-chain continuation prompt (Hermes) ---
+  // When a stored resume id has a newer continuation in the provider's
+  // compression chain, ask whether to switch. Promise-based so the spawn
+  // flow can await the user's choice inline.
+  let showTipConfirm = $state(false);
+  let tipConfirmSessionTitle = $state('');
+  let tipConfirmOldId = $state('');
+  let tipConfirmNewId = $state('');
+  let _tipConfirmResolver: ((useTip: boolean) => void) | null = null;
+
+  function confirmSwitchToTip(session: any, tipId: string): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      // A stale resolver from an abandoned dialog must not leak.
+      if (_tipConfirmResolver) _tipConfirmResolver(false);
+      _tipConfirmResolver = resolve;
+      tipConfirmSessionTitle = session.title || 'this session';
+      tipConfirmOldId = session.claudeSessionId || '';
+      tipConfirmNewId = tipId;
+      showTipConfirm = true;
+    });
+  }
+
+  function resolveTipConfirm(useTip: boolean) {
+    showTipConfirm = false;
+    const resolver = _tipConfirmResolver;
+    _tipConfirmResolver = null;
+    resolver?.(useTip);
+  }
 
   // --- Notification system for action-required prompts (per-session) ---
   // Each session detects its own prompts and tracks its own re-alert guard so
@@ -1275,20 +1306,24 @@
           // else — its state.db row only exists after the first user
           // message, so a session the user opened but never typed into
           // is ONLY visible in this banner.
-          if (entry && entry._exitBuffer && !session.claudeSessionId) {
+          // Re-capture on EVERY exit, not just when the id is missing:
+          // Hermes prints a fresh `--resume <tip>` banner after each
+          // compaction, and the tip id may differ from the stored one.
+          // Without this, a Workbench row keeps pointing at a stale
+          // mid-chain segment forever.
+          if (entry && entry._exitBuffer) {
             const stripped = entry._exitBuffer.replace(/\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '');
             const resumeMatch =
               stripped.match(/claude --resume ([a-f0-9-]{36})/) ||
               stripped.match(/agy --conversation[ =]([a-f0-9-]{36})/) ||
               stripped.match(/hermes --resume ([A-Za-z0-9_-]{8,128})/);
-            if (resumeMatch) {
+            if (resumeMatch && resumeMatch[1] !== session.claudeSessionId) {
               const capturedResumeId = resumeMatch[1];
               session.claudeSessionId = capturedResumeId;
-              // The exit-banner fallback runs after the normal discovery
-              // poll has missed the provider session. Persisting the id is
-              // not enough: sidebar rows are long-lived store objects, so
-              // the next click would otherwise reopen with a stale null id
-              // and launch a fresh CLI instead of --resume.
+              // Persisting the id is not enough: sidebar rows are
+              // long-lived store objects, so the next click would
+              // otherwise reopen with the stale id. Update the DB and
+              // every in-memory reference synchronously.
               syncCapturedAgentSessionId(session.id, capturedResumeId);
               agentUpdateSessionId(session.id, capturedResumeId).catch(() => {});
               agentSyncSessionTitle(session.id).catch(() => {});
@@ -1487,6 +1522,30 @@
       // is now driven explicitly by the user via the Custom-purpose
       // "Resume existing session" picker in NewSessionModal.
       let resumeId = session.claudeSessionId || undefined;
+
+      // Compression-chain freshness check (Hermes). When the provider
+      // compacted this conversation, the stored id points at an older
+      // chain segment while a newer continuation exists. `hermes --resume`
+      // would silently redirect anyway, but the Workbench row would keep
+      // showing stale identity — and a manually started new session in
+      // the same lineage is only visible here. Ask the user once per open.
+      if (resumeId && session.provider === 'hermes') {
+        try {
+          const tip = await agentResolveSessionTip(resumeId, session.profile || undefined);
+          if (tip && tip !== resumeId) {
+            const useTip = await confirmSwitchToTip(session, tip);
+            if (useTip) {
+              resumeId = tip;
+              session.claudeSessionId = tip;
+              syncCapturedAgentSessionId(session.id, tip);
+              agentUpdateSessionId(session.id, tip).catch(() => {});
+            }
+          }
+        } catch (e) {
+          // Detection is best-effort; never block the spawn.
+          console.warn('[TERM] session tip check failed:', e);
+        }
+      }
 
       spawning = true;
       const termId = await agentSpawnTerminal({
@@ -1964,6 +2023,18 @@
 </script>
 
 <ProviderNotInstalledModal bind:show={showNotInstalled} provider={notInstalledProvider} />
+
+<ConfirmDialog
+  bind:show={showTipConfirm}
+  title="Newer continuation found"
+  message={`"${tipConfirmSessionTitle}" was compacted by Hermes and has a newer continuation (${tipConfirmNewId}). Switch this Workbench session to it? The stored resume id (${tipConfirmOldId}) will be updated.`}
+  confirmText="Switch"
+  confirmColor="var(--acc)"
+  discardText="Keep old"
+  onconfirm={() => resolveTipConfirm(true)}
+  ondiscard={() => resolveTipConfirm(false)}
+  oncancel={() => resolveTipConfirm(false)}
+/>
 
 {#if $agentSessionCenterOpen}
   <AgentSessionCenter />

@@ -583,6 +583,7 @@ pub fn run() {
             modes::agent::usage::agent_fetch_codex_usage_limits,
             modes::agent::usage::agent_discover_sessions,
             modes::agent::usage::agent_resolve_resume_id,
+            modes::agent::usage::agent_resolve_session_tip,
             modes::agent::usage::agent_scan_discovered_sessions,
             modes::agent::usage::agent_list_discovered_sessions,
             modes::agent::usage::agent_hide_discovered_session,

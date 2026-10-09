@@ -194,6 +194,12 @@ export const agentDiscoverSessions = (projectPath: string, provider?: string, pr
   invoke<DiscoveredSession[]>('agent_discover_sessions', { projectPath, provider, profile });
 export const agentResolveResumeId = (projectPath: string, provider?: string, profile?: string) =>
   invoke<string | null>('agent_resolve_resume_id', { projectPath, provider, profile });
+/** Follow the Hermes compression chain forward from a stored session id and
+ *  return the live tip id when it differs (null = no newer continuation).
+ *  Used before resume so a Workbench row never silently points at a stale
+ *  segment after Hermes compacted the conversation. */
+export const agentResolveSessionTip = (externalSessionId: string, profile?: string) =>
+  invoke<string | null>('agent_resolve_session_tip', { externalSessionId, profile });
 export const agentScanDiscoveredSessions = (provider?: string) =>
   invoke<DiscoveredSessionScanSummary>('agent_scan_discovered_sessions', { provider });
 export const agentListDiscoveredSessions = (params: {

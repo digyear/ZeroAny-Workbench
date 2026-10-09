@@ -579,6 +579,84 @@ pub fn agent_resolve_resume_id(
     Ok(sessions.into_iter().next().map(|s| s.external_session_id))
 }
 
+/// Walk the Hermes compression chain forward from `external_session_id`
+/// and return the live tip id when it differs from the input.
+///
+/// Hermes compaction (context limit) ends the old session with
+/// `end_reason='compression'` and links the continuation via
+/// `parent_session_id`. A Workbench row that stored an older segment's
+/// id would otherwise keep resuming that stale segment's identity even
+/// though `hermes --resume` silently redirects. Surfacing the tip lets
+/// the UI offer "switch to the newest continuation" and persist the
+/// real id. Mirrors the chain rules in `query_hermes_sessions`:
+/// branch/delegate/tool children never count as continuations.
+/// Returns `Ok(None)` when there is no newer tip, the DB is missing,
+/// or the id is unknown — callers treat all of these as "keep current".
+#[tauri::command]
+pub async fn agent_resolve_session_tip(
+    external_session_id: String,
+    profile: Option<String>,
+) -> Result<Option<String>, String> {
+    let external_session_id = external_session_id.trim().to_string();
+    if external_session_id.is_empty() {
+        return Ok(None);
+    }
+    let profile = profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("default")
+        .to_string();
+    let Some(db_path) = runner_for("hermes")
+        .sessions_root_for_profile(Some(&profile))
+        .map(|root| root.join("state.db"))
+    else {
+        return Ok(None);
+    };
+    if !db_path.exists() {
+        return Ok(None);
+    }
+    resolve_hermes_tip(&db_path, &external_session_id).await
+}
+
+async fn resolve_hermes_tip(
+    db_path: &std::path::Path,
+    external_session_id: &str,
+) -> Result<Option<String>, String> {
+    let opts = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(db_path)
+        .read_only(true)
+        .immutable(false);
+    let pool = sqlx::SqlitePool::connect_with(opts)
+        .await
+        .map_err(|e| format!("Hermes state db open: {}", e))?;
+    let tip: Option<String> = sqlx::query_scalar(
+        r#"
+        WITH RECURSIVE chain(id, depth) AS (
+            SELECT ?, 0
+            UNION ALL
+            SELECT child.id, c.depth + 1
+            FROM chain c
+            JOIN sessions parent ON parent.id = c.id
+            JOIN sessions child ON child.parent_session_id = parent.id
+            WHERE c.depth < 100
+              AND parent.end_reason = 'compression'
+              AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
+              AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
+              AND COALESCE(child.source, '') != 'tool'
+        )
+        SELECT id FROM chain ORDER BY depth DESC LIMIT 1
+        "#,
+    )
+    .bind(external_session_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| format!("Hermes tip query: {}", e))?;
+    pool.close().await;
+
+    Ok(tip.filter(|t| t != external_session_id))
+}
+
 fn discover_sessions_for_project(
     provider: &str,
     project_path: &str,
@@ -4211,6 +4289,87 @@ mod discovery_tests {
         assert_eq!(rows[0].profile.as_deref(), Some("cozy-engineer"));
         assert_eq!(rows[1].external_session_id, "default-session");
         assert_eq!(rows[1].profile.as_deref(), Some("default"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn hermes_tip_resolution_follows_compression_chain_only() {
+        let dir = unique_test_dir("zeroany-workbench-hermes-tip");
+        let db_path = dir.join("state.db");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let opts = sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let pool = sqlx::SqlitePool::connect_with(opts).await.unwrap();
+            sqlx::raw_sql(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, source TEXT NOT NULL, model_config TEXT,
+                    parent_session_id TEXT, started_at REAL NOT NULL, ended_at REAL,
+                    end_reason TEXT, title TEXT, cwd TEXT,
+                    archived INTEGER NOT NULL DEFAULT 0
+                 );",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            // root -> mid -> tip compression chain; plus children that must
+            // NOT count as continuations: a branch, a delegate, and a tool.
+            for (id, parent, end_reason, source, model_config) in [
+                ("root-s", None, Some("compression"), "cli", "{}"),
+                ("mid-s", Some("root-s"), Some("compression"), "cli", "{}"),
+                ("tip-s", Some("mid-s"), None, "cli", "{}"),
+                ("branch-s", Some("root-s"), None, "cli", "{\"_branched_from\":\"root-s\"}"),
+                ("delegate-s", Some("root-s"), None, "cli", "{\"_delegate_from\":\"root-s\"}"),
+                ("tool-s", Some("mid-s"), None, "tool", "{}"),
+            ] {
+                sqlx::query(
+                    "INSERT INTO sessions (
+                        id, parent_session_id, end_reason, source, model_config, started_at, cwd
+                     ) VALUES (?, ?, ?, ?, ?, 100.0, '/repo')",
+                )
+                .bind(id)
+                .bind(parent)
+                .bind(end_reason)
+                .bind(source)
+                .bind(model_config)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            pool.close().await;
+
+            // From the root: walks root -> mid -> tip.
+            assert_eq!(
+                resolve_hermes_tip(&db_path, "root-s").await.unwrap().as_deref(),
+                Some("tip-s")
+            );
+            // From the middle segment: still lands on the tip.
+            assert_eq!(
+                resolve_hermes_tip(&db_path, "mid-s").await.unwrap().as_deref(),
+                Some("tip-s")
+            );
+            // Already at the tip: nothing newer.
+            assert_eq!(resolve_hermes_tip(&db_path, "tip-s").await.unwrap(), None);
+            // Branch/delegate/tool children are not continuations.
+            assert_eq!(
+                resolve_hermes_tip(&db_path, "branch-s").await.unwrap(),
+                None
+            );
+            assert_eq!(
+                resolve_hermes_tip(&db_path, "delegate-s").await.unwrap(),
+                None
+            );
+            // Unknown id: None, not an error.
+            assert_eq!(
+                resolve_hermes_tip(&db_path, "missing-s").await.unwrap(),
+                None
+            );
+        });
+        drop(runtime);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
