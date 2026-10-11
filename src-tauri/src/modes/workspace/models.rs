@@ -163,9 +163,9 @@ pub struct WorkspaceCoworker {
     /// Free-form prompt added to the agent's system prompt on every
     /// run for this coworker. Keeps the persona consistent.
     pub system_prompt: String,
-    /// CLI provider id ('claude', 'codex', 'gemini', 'opencode').
-    /// v1 wires only 'claude'; the column is here so other arms slot
-    /// in later without a migration.
+    /// CLI provider id ('claude', 'codex', 'gemini', 'opencode', 'hermes').
+    /// The column predates the per-provider wiring so new arms slot in
+    /// without a migration.
     pub provider: String,
     /// dicebear seed (defaults to the name; user can re-roll). Same
     /// seed → same avatar deterministically.

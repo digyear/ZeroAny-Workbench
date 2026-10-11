@@ -158,6 +158,11 @@ pub async fn drawer_chat_turn(
         .filter(|p| !p.is_empty())
         .unwrap_or(&session.project_path)
         .to_string();
+    // Drawer-chat hidden sessions never pass through `agent_create_session`,
+    // so lazy per-provider MCP registration doesn't happen for them. Ensure
+    // it here (idempotent, best-effort) so the coworker's cards_*/notes_*
+    // tools are reachable regardless of provider.
+    super::commands::ensure_provider_mcp_registered(pool, &coworker.provider).await;
     // Worktree info is injected into the persona prompt so the agent
     // explicitly knows which branch / directory to work in. Without
     // this, the agent has to introspect via `git branch --show-current`
@@ -198,6 +203,7 @@ pub async fn drawer_chat_turn(
             "codex" => "https://developers.openai.com/codex/quickstart",
             "gemini" => "https://antigravity.google/docs/cli-getting-started",
             "opencode" => "https://opencode.ai/docs/cli/",
+            "hermes" => "https://hermes-agent.nousresearch.com/docs/",
             _ => "https://code.claude.com/docs/en/setup",
         };
         return Ok(soft_err(user_comment, &session.id, format!(
@@ -238,6 +244,7 @@ pub async fn drawer_chat_turn(
             // always the provider id.
             let auth_cmd = match provider_owned.as_str() {
                 "gemini" => "agy /login".to_string(),
+                "hermes" => "hermes auth".to_string(),
                 other => format!("{other} /login"),
             };
             format!("{provider_owned} is not authenticated. Run `{auth_cmd}` and retry.")
@@ -733,6 +740,32 @@ fn oneshot_argv(
                 }
             }
             argv.push("-p".to_string());
+            argv.push(body);
+            argv
+        }
+        "hermes" => {
+            // Hermes' non-interactive form is `hermes -z <prompt>` (one-shot:
+            // prints ONLY the final response text, no banner/spinner, and
+            // auto-bypasses approvals — same trust model as the other arms,
+            // backed by the card-scoped worktree + persona guardrails). It has
+            // no system-prompt flag, so the persona rides in front of the user
+            // prompt like OpenCode/Antigravity. AGENTS.md in the cwd is loaded
+            // by -z as normal, so project rules still apply.
+            //
+            // Drawer chat is stateless: every turn rebuilds the prompt from the
+            // card body + this coworker's prior thread, so no resume id is
+            // required. We still forward one when present for parity/future use.
+            let body = if persona.is_empty() {
+                prompt.to_string()
+            } else {
+                format!("{persona}\n\n---\n\n{prompt}")
+            };
+            let mut argv = vec!["hermes".to_string()];
+            if let Some(sid) = resume_id {
+                argv.push("--resume".to_string());
+                argv.push(sid.to_string());
+            }
+            argv.push("-z".to_string());
             argv.push(body);
             argv
         }

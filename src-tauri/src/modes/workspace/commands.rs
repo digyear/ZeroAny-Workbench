@@ -1155,6 +1155,7 @@ const AGENT_CLAUDE_CODE: &str = "claude-code";
 const AGENT_CODEX: &str = "codex";
 const AGENT_GEMINI: &str = "gemini";
 const AGENT_OPENCODE: &str = "opencode";
+const AGENT_HERMES: &str = "hermes";
 
 /// Env var name the Codex spawn path injects with the workspace MCP
 /// token. Mirrored in `modes/agent/terminal.rs` for `provider=='codex'`
@@ -1187,6 +1188,7 @@ pub async fn ensure_provider_mcp_registered(pool: &SqlitePool, provider: &str) {
         "codex" => register_codex(port, &token),
         "gemini" => register_gemini(port, &token),
         "opencode" => register_opencode(port, &token),
+        "hermes" => register_hermes(port, &token),
         _ => Ok(()),
     };
 }
@@ -1203,9 +1205,10 @@ pub fn workspace_mcp_register(
         AGENT_CODEX => register_codex(port, &token),
         AGENT_GEMINI => register_gemini(port, &token),
         AGENT_OPENCODE => register_opencode(port, &token),
+        AGENT_HERMES => register_hermes(port, &token),
         other => Err(format!(
-            "Unknown agent '{}'. Supported today: {}, {}, {}, {}",
-            other, AGENT_CLAUDE_CODE, AGENT_CODEX, AGENT_GEMINI, AGENT_OPENCODE
+            "Unknown agent '{}'. Supported today: {}, {}, {}, {}, {}",
+            other, AGENT_CLAUDE_CODE, AGENT_CODEX, AGENT_GEMINI, AGENT_OPENCODE, AGENT_HERMES
         )),
     }
 }
@@ -1218,9 +1221,10 @@ pub fn workspace_mcp_unregister(agent: Option<String>) -> Result<(), String> {
         AGENT_CODEX => unregister_codex(),
         AGENT_GEMINI => unregister_gemini(),
         AGENT_OPENCODE => unregister_opencode(),
+        AGENT_HERMES => unregister_hermes(),
         other => Err(format!(
-            "Unknown agent '{}'. Supported today: {}, {}, {}, {}",
-            other, AGENT_CLAUDE_CODE, AGENT_CODEX, AGENT_GEMINI, AGENT_OPENCODE
+            "Unknown agent '{}'. Supported today: {}, {}, {}, {}, {}",
+            other, AGENT_CLAUDE_CODE, AGENT_CODEX, AGENT_GEMINI, AGENT_OPENCODE, AGENT_HERMES
         )),
     }
 }
@@ -1399,6 +1403,74 @@ fn unregister_opencode() -> Result<(), String> {
     Ok(())
 }
 
+// ─── hermes (<HERMES_HOME>/config.yaml) ──────────────────────────────
+//
+// Hermes reads MCP servers from the `mcp_servers` map in its config.yaml.
+// The file is YAML and the workspace crate has no YAML dependency, and a
+// raw read-modify-write would strip the user's comments — so we go through
+// `hermes config set/unset`, which parses the JSON/YAML literal itself and
+// preserves the rest of the file. The remote shape (type/url/headers) mirrors
+// what `hermes mcp add --auth header` writes. The token is a UUID (hex +
+// dashes, no shell metacharacters) and the literal is single-quoted, so the
+// composed command is shell-safe.
+fn run_through_user_shell_out(cmd: &str, label: &str) -> Result<String, String> {
+    use crate::shared::platform::shell::default_user_shell;
+    let (shell_path, shell_kind) = default_user_shell();
+    let argv = shell_kind.exec_command_argv(cmd);
+    let out = std::process::Command::new(&shell_path)
+        .args(&argv)
+        .output()
+        .map_err(|e| format!("{label} spawn failed: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        return Err(if stderr.is_empty() { stdout } else { stderr });
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+fn register_hermes(port: u16, token: &str) -> Result<(), String> {
+    let server = serde_json::json!({
+        "type": "remote",
+        "url": format!("http://localhost:{}/mcp", port),
+        "enabled": true,
+        "headers": { "Authorization": format!("Bearer {}", token) },
+    });
+    let literal = serde_json::to_string(&server).map_err(|e| e.to_string())?;
+    // `--force` lets the value land even though `mcp_servers.<name>` is a
+    // dynamic key with no seeded schema default.
+    let cmd = format!(
+        "hermes config set mcp_servers.zeroany-workbench '{}' --force",
+        literal
+    );
+    run_through_user_shell(&cmd, "hermes config set")
+}
+
+fn unregister_hermes() -> Result<(), String> {
+    // Best-effort: an absent key is not an error from our side.
+    let _ = run_through_user_shell(
+        "hermes config unset mcp_servers.zeroany-workbench",
+        "hermes config unset",
+    );
+    Ok(())
+}
+
+/// Mirror of `sync_gemini_registration` for Hermes. Only rewrites when the
+/// `zeroany-workbench` server is already registered, so token rotation never
+/// adds an entry for a user who never enabled the Hermes coworker path.
+fn sync_hermes_registration(port: u16, token: &str) -> Result<(), String> {
+    let existing = run_through_user_shell_out(
+        "hermes config get mcp_servers.zeroany-workbench",
+        "hermes config get",
+    )
+    .unwrap_or_default();
+    let trimmed = existing.trim();
+    if trimmed.is_empty() || trimmed == "null" || trimmed.contains("not set") {
+        return Ok(());
+    }
+    register_hermes(port, token)
+}
+
 // ─── gemini (~/.gemini/settings.json) ────────────────────────────────
 //
 // Gemini CLI reads MCP servers from `mcpServers` inside its user
@@ -1532,6 +1604,7 @@ pub async fn workspace_mcp_new_token(
     let _ = sync_claude_code_registration(port, &token);
     let _ = sync_gemini_registration(port, &token);
     let _ = sync_opencode_registration(port, &token);
+    let _ = sync_hermes_registration(port, &token);
     Ok(token)
 }
 
@@ -1658,6 +1731,7 @@ fn sync_all_registrations(port: u16, token: &str) {
     let _ = sync_gemini_registration(port, token);
     let _ = sync_opencode_registration(port, token);
     let _ = sync_codex_registration(port, token);
+    let _ = sync_hermes_registration(port, token);
 }
 
 /// Best-effort auto-start, called from `lib.rs setup()` on app boot.

@@ -40,6 +40,11 @@ const ROBOT =
 const OPENCODE =
   '<svg width="11" height="11" viewBox="0 0 240 300" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M180 240H60V120H180V240Z" fill="#4B4646"/><path d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z" fill="#F1ECEC"/></svg>';
 
+// Hermes Agent mark — a winged spark in the Nous/Hermes purple. Inline so
+// workspace consumers (chat bubbles, card chips) render it without a fetch.
+const HERMES =
+  '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M13 2L4.5 13.5H11L9.5 22L19 9.5H12.5L13 2Z" fill="#7c5cf8"/></svg>';
+
 // Google Gemini brand mark — four-color gradient spark. Gradient ids are
 // suffixed with "-cl" to namespace them away from any other Gemini SVG
 // that might also be rendered on the page (prevents def-id collisions).
@@ -56,6 +61,8 @@ export function agentIcon(provider: string | null | undefined): AgentIcon {
       return { svg: GEMINI, color: '#3186ff', label: 'Gemini' };
     case 'opencode':
       return { svg: OPENCODE, color: '#f1ecec', label: 'OpenCode' };
+    case 'hermes':
+      return { svg: HERMES, color: '#7c5cf8', label: 'Hermes' };
     case 'aider':
       return { svg: TERMINAL, color: '#f59e0b', label: 'Aider' };
     default:

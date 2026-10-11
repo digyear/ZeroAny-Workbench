@@ -55,6 +55,7 @@
     { id: 'codex', label: 'Codex', color: '#10a37f' },
     { id: 'gemini', label: 'Antigravity', color: '#3186ff' },
     { id: 'opencode', label: 'OpenCode', color: '#f1ecec' },
+    { id: 'hermes', label: 'Hermes', color: '#7c5cf8' },
   ];
 
   /** Available styles + their human labels for the picker. Only the
