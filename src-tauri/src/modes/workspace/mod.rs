@@ -15,6 +15,7 @@ pub mod mcp;
 pub mod meetings;
 pub mod models;
 pub mod pr;
+pub mod providers;
 pub mod push;
 pub mod repo_target;
 pub mod tickets;

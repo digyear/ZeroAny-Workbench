@@ -40,6 +40,14 @@ pub enum CliError {
     /// caller normally sets `-u origin <branch>` to recover, so this
     /// usually only fires when a manual push is attempted.
     BranchNotPushed,
+    /// No API token stored for this git host. With a token the workspace
+    /// talks to GitHub/GitLab directly; without one it falls back to the
+    /// CLI, so this fires when neither is available.
+    #[serde(rename_all = "camelCase")]
+    TokenMissing { provider: String, host: String },
+    /// Stored token was rejected by the host (401 / revoked / expired).
+    #[serde(rename_all = "camelCase")]
+    TokenRejected { provider: String, host: String },
     /// Catch-all — raw stderr lifted into the toast. Last resort;
     /// every classifiable failure should map to one of the variants
     /// above so we can give a clean next-step hint.
@@ -69,6 +77,12 @@ impl CliError {
             CliError::BranchNotPushed => {
                 "Branch has no upstream remote. Push it first with `git push -u origin <branch>`.".into()
             }
+            CliError::TokenMissing { provider, host } => format!(
+                "No {provider} access token stored for {host}. Save one in the board's Git account settings to connect without the CLI, then retry."
+            ),
+            CliError::TokenRejected { provider, host } => format!(
+                "{provider} rejected the stored token for {host}. Update it in the board's Git account settings and retry."
+            ),
             CliError::Other { stderr } => {
                 if stderr.is_empty() {
                     "Command failed with no output. Check the workspace logs.".into()

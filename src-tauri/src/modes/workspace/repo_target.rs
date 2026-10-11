@@ -21,6 +21,10 @@ pub struct RepoTarget {
     pub cwd: Option<String>,
     /// owner/repo (or group/project) when we could parse it from a URL.
     pub owner_repo: Option<String>,
+    /// The remote URL this target resolved from (explicit project URL or
+    /// the checkout's `origin`). The REST path needs it to work out the
+    /// host and look up a stored token.
+    pub remote_url: String,
 }
 
 fn provider_for(url: &str) -> Option<(&'static str, &'static str)> {
@@ -64,6 +68,7 @@ fn target_from_url(url: &str, cwd: Option<String>) -> Option<RepoTarget> {
         tool,
         cwd,
         owner_repo: super::commands::parse_owner_repo(url),
+        remote_url: url.to_string(),
     })
 }
 
@@ -128,6 +133,7 @@ pub async fn resolve_for_board(
                     tool,
                     cwd: Some(p.clone()),
                     owner_repo: super::commands::parse_owner_repo(&remote),
+                    remote_url: remote.clone(),
                 }));
             }
         }

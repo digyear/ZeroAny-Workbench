@@ -1747,6 +1747,11 @@ pub struct CloudTarget {
     pub tool: Option<String>,
     pub tool_installed: bool,
     pub install_url: Option<String>,
+    /// A stored token for this host — the board then talks to the host's
+    /// REST API and needs neither the CLI nor a login prompt.
+    pub has_token: bool,
+    /// 'token' when the REST path will be used, 'cli' otherwise.
+    pub auth_mode: String,
 }
 
 #[tauri::command]
@@ -1765,6 +1770,8 @@ pub async fn workspace_cloud_target(
             tool: None,
             tool_installed: false,
             install_url: None,
+            has_token: false,
+            auth_mode: "cli".to_string(),
         });
     };
     let install_url = if t.tool == "gh" {
@@ -1772,13 +1779,157 @@ pub async fn workspace_cloud_target(
     } else {
         "https://gitlab.com/gitlab-org/cli"
     };
+    // A stored token makes the REST path available regardless of the CLI.
+    let has_token = match super::providers::parse_repo(&t.remote_url) {
+        Some(repo) => super::providers::stored_token(&repo.host).await.is_some(),
+        None => false,
+    };
     Ok(CloudTarget {
         repo_configured: true,
         provider: Some(t.provider),
         tool: Some(t.tool.to_string()),
         tool_installed: find_binary(t.tool).is_some(),
         install_url: Some(install_url.to_string()),
+        has_token,
+        auth_mode: if has_token { "token".to_string() } else { "cli".to_string() },
     })
+}
+
+/// Token-mode connection state for a repo URL: which provider/host the
+/// workspace will talk to, whether a token is stored, and (when it is)
+/// which account that token belongs to. The board UI uses this to show
+/// "Connected as @user" and to decide between token and CLI guidance.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitAuthStatus {
+    pub provider: Option<String>,
+    pub host: Option<String>,
+    pub has_token: bool,
+    pub identity: Option<String>,
+    /// CLI that would be used when no token is stored.
+    pub cli_tool: Option<String>,
+    pub cli_installed: bool,
+    pub install_url: Option<String>,
+}
+
+#[tauri::command]
+pub async fn workspace_git_auth_status(repo_url: String) -> Result<GitAuthStatus, String> {
+    use crate::shared::platform::path::find_binary;
+    let Some(repo) = super::providers::parse_repo(&repo_url) else {
+        return Ok(GitAuthStatus {
+            provider: None,
+            host: None,
+            has_token: false,
+            identity: None,
+            cli_tool: None,
+            cli_installed: false,
+            install_url: None,
+        });
+    };
+    let token = super::providers::stored_token(&repo.host).await;
+    let identity = match &token {
+        Some(t) => {
+            let ep = super::providers::Endpoints::for_repo(&repo);
+            super::providers::current_user(&ep, t).await.ok()
+        }
+        None => None,
+    };
+    let tool = repo.provider.cli();
+    Ok(GitAuthStatus {
+        provider: Some(repo.provider.as_str().to_string()),
+        host: Some(repo.host.clone()),
+        has_token: token.is_some(),
+        identity,
+        cli_tool: Some(tool.to_string()),
+        cli_installed: find_binary(tool).is_some(),
+        install_url: Some(repo.provider.install_url().to_string()),
+    })
+}
+
+/// Store a token for the repo's host. The token is verified against the
+/// host first, so an invalid paste fails here instead of at the next board
+/// action; the verified account name is returned for the confirmation toast.
+#[tauri::command]
+pub async fn workspace_git_set_token(
+    repo_url: String,
+    token: String,
+) -> Result<String, String> {
+    let repo = super::providers::parse_repo(&repo_url)
+        .ok_or_else(|| format!("Unsupported git remote: {repo_url}"))?;
+    let token = token.trim();
+    if token.is_empty() {
+        return Err("Token is empty".to_string());
+    }
+    let ep = super::providers::Endpoints::for_repo(&repo);
+    let identity = super::providers::current_user(&ep, token)
+        .await
+        .map_err(|e| e.to_string())?;
+    super::providers::store_token(&repo.host, token).await?;
+    Ok(identity)
+}
+
+#[tauri::command]
+pub async fn workspace_git_clear_token(repo_url: String) -> Result<(), String> {
+    let repo = super::providers::parse_repo(&repo_url)
+        .ok_or_else(|| format!("Unsupported git remote: {repo_url}"))?;
+    super::providers::clear_token(&repo.host).await
+}
+
+/// Provider-side issue list → the shape the board imports.
+fn to_project_issue(issue: &super::providers::RemoteIssue, repo: &super::providers::GitRepo) -> ProjectIssue {
+    ProjectIssue {
+        external_id: format!("#{}", issue.number),
+        title: issue.title.clone(),
+        body: issue.body.clone(),
+        url: issue.url.clone(),
+        source: repo.provider.as_str().to_string(),
+        labels: issue.labels.clone(),
+        created_at: issue.created_at.clone(),
+    }
+}
+
+/// Map a provider failure onto the scan banner states the UI already knows:
+/// missing/rejected token becomes the "not authenticated" state with a
+/// pointer at the Git account setting instead of a CLI login command.
+fn provider_scan_error(err: &super::providers::ApiError) -> ProjectScanResult {
+    use super::providers::ApiErrorKind;
+    match err.kind {
+        ApiErrorKind::NoToken | ApiErrorKind::Rejected => ProjectScanResult::NotAuthenticated {
+            tool: format!("{} token", err.provider.label()),
+            login_command: "Board settings → Git account".to_string(),
+        },
+        ApiErrorKind::NoAccess => ProjectScanResult::NoAccess {
+            tool: format!("{} token", err.provider.label()),
+            repo: err.host.clone(),
+            login_command: "Board settings → Git account".to_string(),
+        },
+        ApiErrorKind::Network => ProjectScanResult::NetworkError {
+            message: err.message.clone(),
+        },
+        ApiErrorKind::Other => ProjectScanResult::ApiError {
+            message: err.message(),
+        },
+    }
+}
+
+/// Scan through the REST API when a token is stored for the repo's host.
+/// `Ok(None)` means "no token — caller should fall back to the CLI path".
+async fn scan_via_api(url: &str) -> Result<Option<ProjectScanResult>, String> {
+    let Some(repo) = super::providers::parse_repo(url) else {
+        return Ok(None);
+    };
+    let Some(token) = super::providers::stored_token(&repo.host).await else {
+        return Ok(None);
+    };
+    let ep = super::providers::Endpoints::for_repo(&repo);
+    Ok(Some(match super::providers::list_issues(&ep, &token).await {
+        Ok(issues) => ProjectScanResult::Success {
+            issues: issues.iter().map(|i| to_project_issue(i, &repo)).collect(),
+            remote: url.to_string(),
+            source: repo.provider.as_str().to_string(),
+        },
+        Err(err) => provider_scan_error(&err),
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1791,9 +1942,47 @@ pub async fn workspace_cloud_target(
 pub async fn workspace_scan_project_issues(
     project_path: String,
 ) -> Result<ProjectScanResult, String> {
+    // A stored token means the scan runs over REST and needs no CLI at all.
+    if let Some(url) = read_git_remote(&project_path).await? {
+        if let Some(result) = scan_via_api(&url).await? {
+            return Ok(result);
+        }
+    }
     tauri::async_runtime::spawn_blocking(move || scan_project_issues_sync(&project_path))
         .await
         .map_err(|e| format!("scan thread error: {}", e))?
+}
+
+/// Origin remote of a local checkout, or None when the path isn't a repo /
+/// has no remote. Distinguishes those two cases for the caller.
+async fn read_git_remote(project_path: &str) -> Result<Option<String>, String> {
+    use crate::shared::platform::path::{apply_user_path, find_binary};
+    let path = project_path.to_string();
+    let remote = tokio::task::spawn_blocking(move || {
+        let git_bin = find_binary("git").unwrap_or_else(|| "git".into());
+        let mut git = std::process::Command::new(&git_bin);
+        apply_user_path(&mut git);
+        let inside = git
+            .args(["-C", &path, "rev-parse", "--is-inside-work-tree"])
+            .output();
+        if !matches!(&inside, Ok(o) if o.status.success()) {
+            return None;
+        }
+        let mut git = std::process::Command::new(&git_bin);
+        apply_user_path(&mut git);
+        let out = git
+            .args(["-C", &path, "remote", "get-url", "origin"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!url.is_empty()).then_some(url)
+    })
+    .await
+    .map_err(|e| format!("scan thread error: {e}"))?;
+    Ok(remote)
 }
 
 fn scan_project_issues_sync(project_path: &str) -> Result<ProjectScanResult, String> {
@@ -1932,6 +2121,11 @@ fn map_cli_error_to_scan_result(
             login_command: login_cmd.to_string(),
         },
         Some(CliError::NetworkError { msg }) => ProjectScanResult::NetworkError { message: msg },
+        // Token-mode failures (no token saved for the host / host rejected it)
+        // carry their own actionable message, so they surface verbatim.
+        Some(err @ (CliError::TokenMissing { .. } | CliError::TokenRejected { .. })) => {
+            ProjectScanResult::ApiError { message: err.message() }
+        }
         // NotInstalled is handled before the call (which-check), and
         // NoChanges / BranchNotPushed are git-only — none should fire
         // from issue-list. Fall through to ApiError with the raw stderr.
@@ -1953,6 +2147,10 @@ fn map_cli_error_to_scan_result(
 pub async fn workspace_scan_project_issues_by_url(
     project_url: String,
 ) -> Result<ProjectScanResult, String> {
+    // Token-first: no CLI (and no local clone) needed when the host has one.
+    if let Some(result) = scan_via_api(&project_url).await? {
+        return Ok(result);
+    }
     tauri::async_runtime::spawn_blocking(move || scan_project_url_sync(&project_url))
         .await
         .map_err(|e| format!("scan thread error: {}", e))?

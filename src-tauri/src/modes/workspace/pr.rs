@@ -278,6 +278,35 @@ pub async fn raise_or_update_pr(
         .map(str::to_string)
         .unwrap_or_else(|| format!("Card branch `{}` — see card thread for context.", ctx.branch));
 
+    // Token path first: when a token is stored for the repo's host the PR is
+    // raised over the REST API, so no CLI install or login is needed.
+    if let Some(api) = super::providers::parse_repo(&repo_url) {
+        if let Some(token) = super::providers::stored_token(&api.host).await {
+            let ep = super::providers::Endpoints::for_repo(&api);
+            let base = super::providers::default_branch(&ep, &token)
+                .await
+                .map_err(|e| e.to_cli_error())?;
+            let pr_url =
+                super::providers::create_pull_request(&ep, &token, &ctx.branch, &base, &title, &body)
+                    .await
+                    .map_err(|e| e.to_cli_error())?;
+
+            let now = chrono::Utc::now().to_rfc3339();
+            repo::update_card_pr_url(pool, card_id, &pr_url, actor, &now, repo::MutationGuard::default())
+                .await
+                .map_err(|e| CliError::Other { stderr: format!("DB: {e}") })?;
+            let comment = format!("**PR raised**\n\n[{}]({})", pr_url, pr_url);
+            let cid = uuid::Uuid::new_v4().to_string();
+            let _ = repo::insert_card_comment(pool, &cid, card_id, actor, None, &comment, None, &now, "ticket", None, None, repo::MutationGuard::default()).await;
+            emit_updated(app, card_id);
+            return Ok(RaisePrResult {
+                pr_url,
+                already_existed: false,
+                branch: ctx.branch,
+            });
+        }
+    }
+
     // gh and glab share the create flow but differ on flag names.
     let tool_bin = crate::shared::platform::path::find_binary(tool).ok_or_else(|| {
         CliError::NotInstalled {
@@ -411,6 +440,23 @@ pub async fn check_pr_state(
         .to_string();
 
     let lower = repo_url.to_lowercase();
+    // Token path: ask the host directly, no CLI involved.
+    if let Some(api) = super::providers::parse_repo(&repo_url) {
+        if let Some(number) = super::providers::number_from_url(&pr_url) {
+            if let Some(token) = super::providers::stored_token(&api.host).await {
+                let ep = super::providers::Endpoints::for_repo(&api);
+                let state = super::providers::pull_request_state(&ep, &token, &number)
+                    .await
+                    .map_err(|e| e.to_cli_error())?;
+                return Ok(match state.as_str() {
+                    "open" => PrState::Open,
+                    "merged" => PrState::Merged,
+                    "closed" => PrState::Closed,
+                    _ => PrState::Unknown,
+                });
+            }
+        }
+    }
     let tool = if lower.contains("github.com") {
         "gh"
     } else if lower.contains("gitlab") {

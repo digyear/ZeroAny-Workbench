@@ -21,11 +21,24 @@ use crate::modes::workspace::models::WorkspaceCardComment;
 use crate::shared::platform::path::{apply_user_path, find_binary};
 use crate::shared::repos::workspaces as repo;
 
+#[derive(Clone)]
 struct TicketRef {
     number: String,
     source: String, // "github" | "gitlab"
     tool: &'static str,
     owner_repo: String,
+    /// The issue's web URL — the API path re-parses it for host/provider.
+    url: String,
+}
+
+impl TicketRef {
+    /// `(endpoints, token)` when this issue's host has a stored token, i.e.
+    /// when the REST path can be used instead of the CLI.
+    async fn api_endpoints(&self) -> Option<(super::providers::Endpoints, String)> {
+        let repo = super::providers::parse_repo(&self.url)?;
+        let token = super::providers::stored_token(&repo.host).await?;
+        Some((super::providers::Endpoints::for_repo(&repo), token))
+    }
 }
 
 fn now_rfc3339() -> String {
@@ -91,6 +104,7 @@ async fn resolve_ticket(pool: &SqlitePool, card_id: &str) -> Result<Option<Ticke
         source: source.to_string(),
         tool,
         owner_repo,
+        url,
     }))
 }
 
@@ -102,6 +116,19 @@ pub async fn workspace_card_fetch_ticket_comments(
 ) -> Result<Vec<WorkspaceCardComment>, String> {
     let pool = pool.inner();
     let tref = resolve_ticket(pool, &card_id).await?;
+
+    if let Some(t) = &tref {
+        // Token path: talk to the host's REST API directly.
+        if let Some(api) = t.api_endpoints().await {
+            let comments = super::providers::list_issue_comments(&api.0, &api.1, &t.number)
+                .await
+                .map_err(|e| e.to_cli_error().message())?;
+            upsert_remote_comments(pool, &card_id, t.source.as_str(), &comments).await?;
+            return repo::list_card_comments(pool, &card_id, Some("ticket"))
+                .await
+                .map_err(|e| e.to_string());
+        }
+    }
 
     if let Some(t) = tref {
         let bin = find_binary(t.tool)
@@ -151,6 +178,48 @@ pub async fn workspace_card_fetch_ticket_comments(
     repo::list_card_comments(pool, &card_id, Some("ticket"))
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Store a freshly-fetched provider thread, keyed exactly like the CLI
+/// parsers did: GitHub by the comment URL, GitLab by `note_<id>`.
+async fn upsert_remote_comments(
+    pool: &SqlitePool,
+    card_id: &str,
+    source: &str,
+    comments: &[super::providers::RemoteComment],
+) -> Result<(), String> {
+    let mut kept: Vec<String> = Vec::new();
+    for comment in comments {
+        if comment.body.trim().is_empty() {
+            continue;
+        }
+        let external_id = if source == "github" {
+            comment
+                .url
+                .clone()
+                .unwrap_or_else(|| format!("{}:{}", comment.author, comment.created_at))
+        } else {
+            format!("note_{}", comment.rest_id)
+        };
+        kept.push(external_id.clone());
+        let id = new_id();
+        repo::upsert_external_comment(
+            pool,
+            &id,
+            card_id,
+            &comment.author,
+            &comment.body,
+            &comment.created_at,
+            &external_id,
+            &comment.author,
+        )
+        .await
+        .map_err(|e| format!("DB error storing comment: {e}"))?;
+    }
+    repo::prune_external_comments(pool, card_id, &kept)
+        .await
+        .map_err(|e| format!("DB error pruning comments: {e}"))?;
+    Ok(())
 }
 
 async fn upsert_github_comments(
@@ -346,6 +415,19 @@ async fn run_comment_api(
 ) -> Result<(), String> {
     let rid = comment_rest_id(comment_url, &t.source)
         .ok_or_else(|| "Could not determine the comment id".to_string())?;
+    // Token path: edit/delete straight through the host's REST API.
+    if let Some((ep, token)) = t.api_endpoints().await {
+        let result = match (method, body) {
+            ("PATCH", Some(value)) => {
+                super::providers::update_issue_comment(&ep, &token, &t.number, &rid, value).await
+            }
+            ("DELETE", _) => {
+                super::providers::delete_issue_comment(&ep, &token, &t.number, &rid).await
+            }
+            _ => Ok(()),
+        };
+        return result.map_err(|e| e.to_cli_error().message());
+    }
     let bin = find_binary(t.tool)
         .ok_or_else(|| format!("{} is not installed or not on PATH.", t.tool))?;
     let (endpoint, method) = if t.source == "github" {
@@ -409,7 +491,27 @@ pub async fn workspace_card_post_ticket_comment(
     let tref = resolve_ticket(pool, &card_id).await?;
 
     let mut external_id: Option<String> = None;
-    if let Some(t) = &tref {
+    let api_target = match &tref {
+        Some(t) => t
+            .api_endpoints()
+            .await
+            .map(|(ep, token)| (ep, token, t.clone())),
+        None => None,
+    };
+    if let Some((ep, token, t)) = api_target {
+        let posted = super::providers::post_issue_comment(&ep, &token, &t.number, &trimmed)
+            .await
+            .map_err(|e| e.to_cli_error().message())?;
+        external_id = if t.source == "gitlab" {
+            // Match the key the fetch path stores so a refresh updates in place.
+            Some(format!("note_{}", posted.rest_id))
+        } else {
+            posted
+                .url
+                .clone()
+                .or_else(|| Some(format!("{}:{}", posted.author, posted.created_at)))
+        };
+    } else if let Some(t) = &tref {
         let bin = find_binary(t.tool)
             .ok_or_else(|| format!("{} is not installed or not on PATH.", t.tool))?;
         let number = t.number.clone();
