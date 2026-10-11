@@ -37,6 +37,7 @@ pub async fn insert_coworker(
     role: &str,
     system_prompt: &str,
     provider: &str,
+    profile: Option<&str>,
     avatar_seed: &str,
     avatar_style: &str,
     created_at: &str,
@@ -44,15 +45,16 @@ pub async fn insert_coworker(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "INSERT INTO workspace_coworkers \
-         (id, name, role, system_prompt, provider, avatar_seed, avatar_style, \
+         (id, name, role, system_prompt, provider, profile, avatar_seed, avatar_style, \
           created_at, created_by) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id)
     .bind(name)
     .bind(role)
     .bind(system_prompt)
     .bind(provider)
+    .bind(profile)
     .bind(avatar_seed)
     .bind(avatar_style)
     .bind(created_at)
@@ -70,12 +72,13 @@ pub async fn update_coworker(
     role: &str,
     system_prompt: &str,
     provider: &str,
+    profile: Option<&str>,
     avatar_seed: &str,
     avatar_style: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE workspace_coworkers \
-         SET name = ?, role = ?, system_prompt = ?, provider = ?, \
+         SET name = ?, role = ?, system_prompt = ?, provider = ?, profile = ?, \
              avatar_seed = ?, avatar_style = ? \
          WHERE id = ?",
     )
@@ -83,6 +86,7 @@ pub async fn update_coworker(
     .bind(role)
     .bind(system_prompt)
     .bind(provider)
+    .bind(profile)
     .bind(avatar_seed)
     .bind(avatar_style)
     .bind(id)
@@ -172,4 +176,85 @@ pub async fn count_active(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
     .fetch_one(pool)
     .await?;
     Ok(row.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn memory_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(
+            "CREATE TABLE workspace_coworkers (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT '',
+                system_prompt TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT 'claude',
+                profile TEXT,
+                avatar_seed TEXT NOT NULL,
+                avatar_style TEXT NOT NULL DEFAULT 'personas',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                created_by TEXT NOT NULL DEFAULT 'user',
+                disabled_at TEXT
+            );",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn coworker_profile_round_trips_through_create_and_update() {
+        let pool = memory_pool().await;
+        insert_coworker(
+            &pool,
+            "cw-1",
+            "hera",
+            "Reviewer",
+            "Be thorough",
+            "hermes",
+            Some("cozy-engineer"),
+            "hera",
+            "personas",
+            "2026-01-01T00:00:00Z",
+            "user",
+        )
+        .await
+        .unwrap();
+
+        let cw = get_coworker(&pool, "cw-1").await.unwrap();
+        assert_eq!(cw.provider, "hermes");
+        assert_eq!(cw.profile.as_deref(), Some("cozy-engineer"));
+
+        // Update clears the profile (switching back to default).
+        update_coworker(
+            &pool, "cw-1", "hera", "Reviewer", "Be thorough", "hermes", None, "hera",
+            "personas",
+        )
+        .await
+        .unwrap();
+        let cleared = get_coworker(&pool, "cw-1").await.unwrap();
+        assert_eq!(cleared.profile, None);
+
+        // A legacy row created without profile reads back as None.
+        insert_coworker(
+            &pool,
+            "cw-2",
+            "matt",
+            "Developer",
+            "",
+            "claude",
+            None,
+            "matt",
+            "personas",
+            "2026-01-01T00:00:00Z",
+            "user",
+        )
+        .await
+        .unwrap();
+        let claude_cw = get_coworker(&pool, "cw-2").await.unwrap();
+        assert_eq!(claude_cw.profile, None);
+    }
 }

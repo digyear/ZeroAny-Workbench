@@ -254,6 +254,7 @@ export interface CoworkerInput {
   role?: string;
   systemPrompt?: string;
   provider?: string;
+  profile?: string;
   avatarSeed?: string;
   avatarStyle?: string;
   actor: string;
@@ -267,6 +268,7 @@ export interface CoworkerUpdate {
   role?: string;
   systemPrompt?: string;
   provider?: string;
+  profile?: string;
   avatarSeed?: string;
   avatarStyle?: string;
 }

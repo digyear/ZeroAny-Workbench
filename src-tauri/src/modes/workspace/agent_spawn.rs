@@ -162,7 +162,12 @@ pub async fn drawer_chat_turn(
     // so lazy per-provider MCP registration doesn't happen for them. Ensure
     // it here (idempotent, best-effort) so the coworker's cards_*/notes_*
     // tools are reachable regardless of provider.
-    super::commands::ensure_provider_mcp_registered(pool, &coworker.provider).await;
+    super::commands::ensure_provider_mcp_registered_for_profile(
+        pool,
+        &coworker.provider,
+        coworker.profile.as_deref(),
+    )
+    .await;
     // Worktree info is injected into the persona prompt so the agent
     // explicitly knows which branch / directory to work in. Without
     // this, the agent has to introspect via `git branch --show-current`
@@ -755,12 +760,24 @@ fn oneshot_argv(
             // Drawer chat is stateless: every turn rebuilds the prompt from the
             // card body + this coworker's prior thread, so no resume id is
             // required. We still forward one when present for parity/future use.
+            //
+            // `-p <profile>` runs the turn against a named Hermes profile
+            // (its own config/model/credentials home). Empty = default.
             let body = if persona.is_empty() {
                 prompt.to_string()
             } else {
                 format!("{persona}\n\n---\n\n{prompt}")
             };
             let mut argv = vec!["hermes".to_string()];
+            if let Some(profile) = coworker
+                .profile
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && *s != "default")
+            {
+                argv.push("-p".to_string());
+                argv.push(profile.to_string());
+            }
             if let Some(sid) = resume_id {
                 argv.push("--resume".to_string());
                 argv.push(sid.to_string());

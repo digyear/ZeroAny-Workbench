@@ -167,6 +167,10 @@ pub struct WorkspaceCoworker {
     /// The column predates the per-provider wiring so new arms slot in
     /// without a migration.
     pub provider: String,
+    /// Hermes profile (`-p <name>`) this coworker runs under. NULL/empty =
+    /// default profile. Ignored by other providers.
+    #[sqlx(default)]
+    pub profile: Option<String>,
     /// dicebear seed (defaults to the name; user can re-roll). Same
     /// seed → same avatar deterministically.
     pub avatar_seed: String,

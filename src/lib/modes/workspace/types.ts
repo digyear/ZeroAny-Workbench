@@ -134,6 +134,9 @@ export interface WorkspaceCoworker {
   role: string;
   systemPrompt: string;
   provider: string;
+  /** Hermes profile this coworker runs under (null/empty = default).
+   *  Only meaningful for provider='hermes'. */
+  profile: string | null;
   /** dicebear seed — defaults to the name, user can re-roll. */
   avatarSeed: string;
   /** dicebear collection name ('personas', 'bottts', …). */

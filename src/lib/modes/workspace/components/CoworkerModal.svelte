@@ -14,6 +14,7 @@
     workspaceCoworkerDelete,
     workspaceCoworkerList,
   } from '../commands';
+  import { agentListProfiles } from '$lib/modes/agent/commands';
   import { currentUserActor } from '../attribution';
   import { loadCoworkers } from '../stores';
   import type { WorkspaceCoworker } from '../types';
@@ -45,6 +46,11 @@
   let avatarSeed = $state('');
   let avatarStyle = $state('bottts');
   let provider = $state('claude');
+  // Hermes-only: which profile this coworker runs under. Loaded lazily when
+  // provider==='hermes'; empty/default means the default profile.
+  let profile = $state('');
+  let hermesProfiles = $state<string[]>([]);
+  let profileProbeId = 0;
   let saving = $state(false);
   let confirmingDelete = $state(false);
   let showProRequired = $state(false);
@@ -100,10 +106,25 @@
       avatarSeed   = existing?.avatarSeed ?? '';
       avatarStyle  = existing?.avatarStyle ?? 'bottts';
       provider     = existing?.provider ?? 'claude';
+      profile      = existing?.profile ?? '';
       confirmingDelete = false;
       showProRequired = false;
+      if (provider === 'hermes') void loadHermesProfiles();
     }
   });
+
+  // Load Hermes profiles lazily; only relevant when provider==='hermes'.
+  async function loadHermesProfiles() {
+    const probeId = ++profileProbeId;
+    try {
+      const available = await agentListProfiles('hermes');
+      if (probeId !== profileProbeId) return;
+      hermesProfiles = available;
+      if (profile && !available.includes(profile)) profile = '';
+    } catch (_) {
+      if (probeId === profileProbeId) hermesProfiles = [];
+    }
+  }
 
   /** Default seed when the user hasn't customised it: their typed name.
    *  Once they re-roll, the field becomes fixed (seed is preserved). */
@@ -136,6 +157,8 @@
     saving = true;
     try {
       const seedToSave = avatarSeed.trim() || name.trim();
+      // Only Hermes carries a profile; blank = default profile.
+      const profileToSave = provider === 'hermes' ? profile.trim() : '';
       const cw = isEdit
         ? await workspaceCoworkerUpdate({
             id: existing!.id,
@@ -143,6 +166,7 @@
             role: role.trim(),
             systemPrompt: systemPrompt.trim(),
             provider,
+            profile: profileToSave,
             avatarSeed: seedToSave,
             avatarStyle,
           })
@@ -151,6 +175,7 @@
             role: role.trim(),
             systemPrompt: systemPrompt.trim(),
             provider,
+            profile: profileToSave,
             avatarSeed: seedToSave,
             avatarStyle,
             actor: currentUserActor(),
@@ -282,7 +307,10 @@
                 class:selected={provider === p.id}
                 class:missing
                 title={missing ? `${p.label} not found on PATH` : `Use ${p.label}`}
-                onclick={() => provider = p.id}
+                onclick={() => {
+                  provider = p.id;
+                  if (p.id === 'hermes') void loadHermesProfiles();
+                }}
                 type="button"
               >
                 <span class="cm-provider-dot" style="background:{p.color}"></span>
@@ -305,6 +333,24 @@
             </button>
           </div>
         </div>
+
+        {#if provider === 'hermes' && hermesProfiles.length > 1}
+          <!-- ─── Hermes profile ─── -->
+          <label class="cm-field">
+            <span class="cm-label">
+              Hermes Profile
+              <span class="cm-hint">Runs this coworker under the selected profile's config, model, and credentials.</span>
+            </span>
+            <select class="cm-input" bind:value={profile}>
+              <option value="">default</option>
+              {#each hermesProfiles as p}
+                {#if p !== 'default'}
+                  <option value={p}>{p}</option>
+                {/if}
+              {/each}
+            </select>
+          </label>
+        {/if}
       </div>
 
       {#if showProRequired}

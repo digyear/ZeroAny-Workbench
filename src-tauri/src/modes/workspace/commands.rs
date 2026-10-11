@@ -1173,6 +1173,18 @@ pub(crate) const CODEX_BEARER_ENV: &str = "ZEROANY_WORKBENCH_TOKEN";
 /// would modify external config files for alpha testers who installed
 /// the CLIs for their own use.
 pub async fn ensure_provider_mcp_registered(pool: &SqlitePool, provider: &str) {
+    ensure_provider_mcp_registered_for_profile(pool, provider, None).await
+}
+
+/// Profile-aware variant: Hermes coworkers can run under `-p <profile>`,
+/// whose config.yaml lives in the profile home. Registering into the
+/// default home would leave the profile's sessions without the
+/// workspace MCP tools.
+pub async fn ensure_provider_mcp_registered_for_profile(
+    pool: &SqlitePool,
+    provider: &str,
+    profile: Option<&str>,
+) {
     if provider == "claude" {
         return; // already handled by maybe_autostart_mcp
     }
@@ -1188,7 +1200,7 @@ pub async fn ensure_provider_mcp_registered(pool: &SqlitePool, provider: &str) {
         "codex" => register_codex(port, &token),
         "gemini" => register_gemini(port, &token),
         "opencode" => register_opencode(port, &token),
-        "hermes" => register_hermes(port, &token),
+        "hermes" => register_hermes(port, &token, profile),
         _ => Ok(()),
     };
 }
@@ -1205,7 +1217,7 @@ pub fn workspace_mcp_register(
         AGENT_CODEX => register_codex(port, &token),
         AGENT_GEMINI => register_gemini(port, &token),
         AGENT_OPENCODE => register_opencode(port, &token),
-        AGENT_HERMES => register_hermes(port, &token),
+        AGENT_HERMES => register_hermes(port, &token, None),
         other => Err(format!(
             "Unknown agent '{}'. Supported today: {}, {}, {}, {}, {}",
             other, AGENT_CLAUDE_CODE, AGENT_CODEX, AGENT_GEMINI, AGENT_OPENCODE, AGENT_HERMES
@@ -1221,7 +1233,7 @@ pub fn workspace_mcp_unregister(agent: Option<String>) -> Result<(), String> {
         AGENT_CODEX => unregister_codex(),
         AGENT_GEMINI => unregister_gemini(),
         AGENT_OPENCODE => unregister_opencode(),
-        AGENT_HERMES => unregister_hermes(),
+        AGENT_HERMES => unregister_hermes(None),
         other => Err(format!(
             "Unknown agent '{}'. Supported today: {}, {}, {}, {}, {}",
             other, AGENT_CLAUDE_CODE, AGENT_CODEX, AGENT_GEMINI, AGENT_OPENCODE, AGENT_HERMES
@@ -1429,7 +1441,22 @@ fn run_through_user_shell_out(cmd: &str, label: &str) -> Result<String, String> 
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
-fn register_hermes(port: u16, token: &str) -> Result<(), String> {
+fn hermes_profile_home(profile: Option<&str>) -> Option<String> {
+    // Mirror HermesRunner::profile_home so `hermes config …` below edits
+    // the same config.yaml the `-p <profile>` runtime will read.
+    use crate::shared::cli::registry::runner_for;
+    let home = runner_for("hermes").sessions_root_for_profile(profile)?;
+    Some(home.to_string_lossy().to_string())
+}
+
+/// Quote a value for safe interpolation into a `VAR=value cmd` shell prefix.
+/// Profile names are validated alphanumeric by `validate_coworker_provider_profile`,
+/// and HERMES_HOME paths could in principle contain spaces — quote defensively.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn register_hermes(port: u16, token: &str, profile: Option<&str>) -> Result<(), String> {
     let server = serde_json::json!({
         "type": "remote",
         "url": format!("http://localhost:{}/mcp", port),
@@ -1438,20 +1465,30 @@ fn register_hermes(port: u16, token: &str) -> Result<(), String> {
     });
     let literal = serde_json::to_string(&server).map_err(|e| e.to_string())?;
     // `--force` lets the value land even though `mcp_servers.<name>` is a
-    // dynamic key with no seeded schema default.
+    // dynamic key with no seeded schema default. HERMES_HOME points config
+    // set/get at the right profile's config.yaml (None = default home).
+    let home_prefix = match hermes_profile_home(profile) {
+        Some(home) => format!("HERMES_HOME={} ", shell_quote(&home)),
+        None => String::new(),
+    };
     let cmd = format!(
-        "hermes config set mcp_servers.zeroany-workbench '{}' --force",
-        literal
+        "{}hermes config set mcp_servers.zeroany-workbench '{}' --force",
+        home_prefix, literal
     );
     run_through_user_shell(&cmd, "hermes config set")
 }
 
-fn unregister_hermes() -> Result<(), String> {
+fn unregister_hermes(profile: Option<&str>) -> Result<(), String> {
     // Best-effort: an absent key is not an error from our side.
-    let _ = run_through_user_shell(
-        "hermes config unset mcp_servers.zeroany-workbench",
-        "hermes config unset",
+    let home_prefix = match hermes_profile_home(profile) {
+        Some(home) => format!("HERMES_HOME={} ", shell_quote(&home)),
+        None => String::new(),
+    };
+    let cmd = format!(
+        "{}hermes config unset mcp_servers.zeroany-workbench",
+        home_prefix
     );
+    let _ = run_through_user_shell(&cmd, "hermes config unset");
     Ok(())
 }
 
@@ -1468,7 +1505,7 @@ fn sync_hermes_registration(port: u16, token: &str) -> Result<(), String> {
     if trimmed.is_empty() || trimmed == "null" || trimmed.contains("not set") {
         return Ok(());
     }
-    register_hermes(port, token)
+    register_hermes(port, token, None)
 }
 
 // ─── gemini (~/.gemini/settings.json) ────────────────────────────────
@@ -2456,9 +2493,32 @@ pub struct CoworkerInput {
     pub role: Option<String>,
     pub system_prompt: Option<String>,
     pub provider: Option<String>,
+    /// Hermes profile this coworker runs under. Only valid with
+    /// provider='hermes'; validated against `hermes` profiles on save.
+    pub profile: Option<String>,
     pub avatar_seed: Option<String>,
     pub avatar_style: Option<String>,
     pub actor: String,
+}
+
+/// Validate + normalize a coworker's provider/profile pair. Profile is
+/// only meaningful for Hermes; any other provider must not carry one.
+fn validate_coworker_provider_profile(
+    provider: &str,
+    profile: Option<&str>,
+) -> Result<Option<String>, String> {
+    let profile = profile.map(str::trim).filter(|s| !s.is_empty());
+    if profile.is_some() && provider != "hermes" {
+        return Err(format!("Provider '{provider}' does not support profiles"));
+    }
+    if let Some(selected) = profile {
+        use crate::shared::cli::registry::runner_for;
+        let available = runner_for("hermes").profiles()?;
+        if !available.iter().any(|candidate| candidate == selected) {
+            return Err(format!("Hermes profile '{selected}' does not exist"));
+        }
+    }
+    Ok(profile.map(str::to_string))
 }
 
 #[tauri::command]
@@ -2487,6 +2547,8 @@ pub async fn workspace_coworker_create(
     }
     let id = uuid::Uuid::new_v4().to_string();
     let now = now_rfc3339();
+    let provider = input.provider.as_deref().unwrap_or("claude");
+    let profile = validate_coworker_provider_profile(provider, input.profile.as_deref())?;
     let avatar_seed = input
         .avatar_seed
         .as_deref()
@@ -2500,7 +2562,8 @@ pub async fn workspace_coworker_create(
         name,
         input.role.as_deref().unwrap_or("").trim(),
         input.system_prompt.as_deref().unwrap_or("").trim(),
-        input.provider.as_deref().unwrap_or("claude"),
+        provider,
+        profile.as_deref(),
         &avatar_seed,
         input.avatar_style.as_deref().unwrap_or("personas"),
         &now,
@@ -2522,6 +2585,7 @@ pub struct CoworkerUpdate {
     pub role: Option<String>,
     pub system_prompt: Option<String>,
     pub provider: Option<String>,
+    pub profile: Option<String>,
     pub avatar_seed: Option<String>,
     pub avatar_style: Option<String>,
 }
@@ -2535,6 +2599,8 @@ pub async fn workspace_coworker_update(
     if name.is_empty() {
         return Err("Coworker name is required".into());
     }
+    let provider = input.provider.as_deref().unwrap_or("claude");
+    let profile = validate_coworker_provider_profile(provider, input.profile.as_deref())?;
     let avatar_seed = input
         .avatar_seed
         .as_deref()
@@ -2548,7 +2614,8 @@ pub async fn workspace_coworker_update(
         name,
         input.role.as_deref().unwrap_or("").trim(),
         input.system_prompt.as_deref().unwrap_or("").trim(),
-        input.provider.as_deref().unwrap_or("claude"),
+        provider,
+        profile.as_deref(),
         &avatar_seed,
         input.avatar_style.as_deref().unwrap_or("personas"),
     )
