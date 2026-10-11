@@ -23,6 +23,12 @@
 
   let { projectPath, state, busy = false, lastSyncedAt = null, onsync, ondismiss }: Props = $props();
 
+  /** Token-mode targets use a "<Provider> token" tool name instead of a CLI,
+   *  so their copy must not tell the user to run a shell command. */
+  const isTokenTarget = $derived(
+    state !== null && 'tool' in state && (state.tool ?? '').endsWith(' token'),
+  );
+
   function copyToClipboard(text: string) {
     navigator.clipboard.writeText(text).catch(() => {});
   }
@@ -97,7 +103,7 @@
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/></svg>
         </span>
         <span class="sb-text">
-          <strong>{state.tool}</strong> isn't installed. {#if state.tool === 'gh'}Install GitHub CLI{:else}Install GitLab CLI{/if} to sync issues.
+          <strong>{state.tool}</strong> isn't installed. {#if state.tool === 'gh'}Install GitHub CLI{:else}Install GitLab CLI{/if} to sync issues — or save a personal access token in <span class="sb-mono">Board settings → Git account</span> to skip the CLI entirely.
         </span>
         <a class="sb-btn primary" href={state.installUrl} target="_blank" rel="noopener">Install {state.tool}</a>
         <button class="sb-btn ghost" onclick={() => ondismiss?.()}>Skip</button>
@@ -107,11 +113,15 @@
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
         </span>
         <span class="sb-text">
-          <strong>{state.tool}</strong> isn't signed in. Run this in a terminal, then retry:
-          <button class="sb-cmd" onclick={() => copyToClipboard(state.loginCommand)} title="Copy">
-            <span class="sb-mono">{state.loginCommand}</span>
-            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-          </button>
+          {#if isTokenTarget}
+            No <strong>{state.tool}</strong> saved for this repo. Add one under <span class="sb-mono">Board settings → Git account</span> to sync issues without a CLI.
+          {:else}
+            <strong>{state.tool}</strong> isn't signed in. Run this in a terminal, then retry:
+            <button class="sb-cmd" onclick={() => copyToClipboard(state.loginCommand)} title="Copy">
+              <span class="sb-mono">{state.loginCommand}</span>
+              <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+            </button>
+          {/if}
         </span>
         <button class="sb-btn primary" onclick={() => onsync?.()} disabled={busy}>Retry</button>
 

@@ -159,6 +159,21 @@ export const workspaceCardDeleteTicketComment = (commentId: string) =>
 export const workspaceCloudTarget = (boardId: string) =>
   invoke<import('./types').CloudTarget>('workspace_cloud_target', { boardId });
 
+// ── Git account (token mode) ──────────────────────────────────────────
+//
+// Boards can talk to GitHub/GitLab over REST with a personal access token
+// stored in the OS credential store, so no `gh` / `glab` CLI is required.
+
+export const workspaceGitAuthStatus = (repoUrl: string) =>
+  invoke<import('./types').GitAuthStatus>('workspace_git_auth_status', { repoUrl });
+
+/** Stores the token after verifying it; resolves to the account name. */
+export const workspaceGitSetToken = (repoUrl: string, token: string) =>
+  invoke<string>('workspace_git_set_token', { repoUrl, token });
+
+export const workspaceGitClearToken = (repoUrl: string) =>
+  invoke<void>('workspace_git_clear_token', { repoUrl });
+
 export interface CardPushResult {
   id: string;
   externalId: string;

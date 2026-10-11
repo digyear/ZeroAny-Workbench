@@ -175,6 +175,21 @@ export interface CloudTarget {
   tool: string | null;
   toolInstalled: boolean;
   installUrl: string | null;
+  /** A token is stored for this host → the REST path is used, no CLI needed. */
+  hasToken: boolean;
+  authMode: 'token' | 'cli';
+}
+
+/** Token-mode connection state for a repo URL (board Git account section). */
+export interface GitAuthStatus {
+  provider: 'github' | 'gitlab' | null;
+  host: string | null;
+  hasToken: boolean;
+  /** Account the stored token belongs to, when known. */
+  identity: string | null;
+  cliTool: string | null;
+  cliInstalled: boolean;
+  installUrl: string | null;
 }
 
 // Inbox row — a note or card recently mutated by an agent (any

@@ -54,7 +54,7 @@
   const cloudReady = $derived(
     !!target?.repoConfigured &&
       (target?.provider === 'github' || target?.provider === 'gitlab') &&
-      !!target?.toolInstalled,
+      (!!target?.toolInstalled || !!target?.hasToken),
   );
   /** Why cloud is unavailable — drives the inline hint + action. */
   const cloudBlocker = $derived.by<null | 'no-repo' | 'unsupported' | 'no-tool'>(() => {

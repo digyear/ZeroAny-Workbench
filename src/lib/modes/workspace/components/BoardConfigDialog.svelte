@@ -11,7 +11,8 @@
   import { showToast } from '$lib/shared/primitives/toast';
   import { errorToast } from '$lib/utils/errors';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
-  import { workspaceBoardSetProject } from '../commands';
+  import { workspaceBoardSetProject, workspaceGitAuthStatus, workspaceGitSetToken, workspaceGitClearToken } from '../commands';
+  import type { GitAuthStatus } from '../types';
 
   interface Props {
     show: boolean;
@@ -35,6 +36,62 @@
   let projectPath = $state(initialPath ?? '');
   let projectUrl = $state(initialUrl ?? '');
   let saving = $state(false);
+
+  // ── Git account (token mode) ──────────────────────────────────────
+  // With a personal access token the board talks to GitHub/GitLab over
+  // REST: issues, ticket comments and PRs all work without `gh`/`glab`.
+  let auth = $state<GitAuthStatus | null>(null);
+  let tokenInput = $state('');
+  let authBusy = $state(false);
+
+  /** URL the Git account section applies to (typed, else saved). */
+  const authUrl = $derived((projectUrl.trim() || initialUrl || '').trim());
+  const authSupported = $derived(auth?.provider === 'github' || auth?.provider === 'gitlab');
+
+  $effect(() => {
+    const url = authUrl;
+    if (!show || !url) {
+      auth = null;
+      return;
+    }
+    let cancelled = false;
+    workspaceGitAuthStatus(url)
+      .then((status) => { if (!cancelled) auth = status; })
+      .catch(() => { if (!cancelled) auth = null; });
+    return () => { cancelled = true; };
+  });
+
+  async function connectToken() {
+    const url = authUrl;
+    const token = tokenInput.trim();
+    if (!url || !token) return;
+    authBusy = true;
+    try {
+      const identity = await workspaceGitSetToken(url, token);
+      tokenInput = '';
+      auth = await workspaceGitAuthStatus(url);
+      showToast(`Connected to ${auth?.host ?? 'git host'} as @${identity}`);
+    } catch (e) {
+      errorToast('Token rejected', e);
+    } finally {
+      authBusy = false;
+    }
+  }
+
+  async function disconnectToken() {
+    const url = authUrl;
+    if (!url) return;
+    authBusy = true;
+    try {
+      await workspaceGitClearToken(url);
+      auth = await workspaceGitAuthStatus(url);
+      showToast('Git token removed');
+    } catch (e) {
+      errorToast('Could not remove token', e);
+    } finally {
+      authBusy = false;
+    }
+  }
 
   $effect(() => {
     if (show) {
@@ -123,6 +180,45 @@
       <span class="bc-hint">No local clone needed — issues are fetched via the URL.</span>
     </label>
 
+    {#if authSupported && auth}
+      <div class="bc-field bc-auth">
+        <span class="bc-label">Git account</span>
+        <div class="bc-auth-status">
+          <span class="bc-auth-dot" class:on={auth.hasToken}></span>
+          <span class="bc-auth-text">
+            {#if auth.hasToken}
+              Connected to {auth.host}{auth.identity ? ` as @${auth.identity}` : ''}
+            {:else}
+              No token for {auth.host} — board actions use the {auth.cliTool} CLI{auth.cliInstalled
+                ? ''
+                : ' (not installed)'}
+            {/if}
+          </span>
+        </div>
+        <div class="bc-row">
+          <input
+            class="bc-input"
+            type="password"
+            placeholder={auth.hasToken ? 'Replace token' : 'Paste a personal access token'}
+            bind:value={tokenInput}
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <button class="bc-browse" onclick={connectToken} disabled={authBusy || !tokenInput.trim()}>
+            {authBusy ? 'Checking…' : 'Connect'}
+          </button>
+          {#if auth.hasToken}
+            <button class="bc-browse" onclick={disconnectToken} disabled={authBusy}>Remove</button>
+          {/if}
+        </div>
+        <span class="bc-hint">
+          With a token the board talks to {auth.provider === 'github' ? 'GitHub' : 'GitLab'}
+          directly — importing issues, ticket comments and raising PRs need no CLI. The token is
+          stored in your system credential store and verified against the host before saving.
+        </span>
+      </div>
+    {/if}
+
     <div class="bc-actions">
       {#if initialPath || initialUrl}
         <button class="bc-btn-clear" onclick={clear} disabled={saving}>Use workspace project</button>
@@ -178,6 +274,28 @@
     color: var(--t4);
     font-family: var(--ui);
   }
+  /* Git account row — status dot + host/account line above the token field. */
+  .bc-auth {
+    padding-top: 12px;
+    border-top: 1px solid var(--b1);
+  }
+  .bc-auth-status {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11.5px;
+    font-family: var(--ui);
+    color: var(--t2);
+  }
+  .bc-auth-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--t4);
+    flex: none;
+  }
+  .bc-auth-dot.on { background: var(--acc); }
+  .bc-auth-text { min-width: 0; }
   /* Subtle "or" divider between the two input rows. */
   .bc-or {
     position: relative;

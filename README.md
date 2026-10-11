@@ -112,7 +112,7 @@ Every session emits **usage analytics** — tokens in / out, cost, cache hit, mo
 A shared layer your agents can read, write, and act on through MCP.
 
 - **Kanban boards** — Backlog → Todo → In Progress → In Review → Done. *Review* is a safety gate, not a column you skip past.
-- **Two-way Git integration** — pull open issues from **GitHub** and **GitLab** into a board, push finished cards back as pull requests.
+- **Two-way Git integration** — pull open issues from **GitHub** and **GitLab** into a board, push finished cards back as pull requests. Connect a host with a personal access token (board settings → **Git account**) and no `gh` / `glab` CLI is needed
 - **Project linking** — point a workspace at a git repo and ZeroAny Workbench auto-spawns one board per subproject.
 - **Notion-style notes** — a real WYSIWYG markdown editor, not a textarea. Per-project, linked to sessions, exposed through MCP.
 - **AI coworkers** — named personas (Tech Lead, Brainstormer, Developer, Reviewer, QA) with their own prompts and providers. They read cards, comment, request changes, claim work, commit, and raise PRs.
