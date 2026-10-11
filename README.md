@@ -73,7 +73,7 @@ Per-session controls:
 - **Purpose** — pin the session's intent up front (see table below)
 - **Provider** — choose Claude, Codex, Gemini, OpenCode, or Hermes for each session
 - **Hermes profile** — choose the default or a named Hermes profile and keep that identity when the session is reopened
-- **Base branch + worktree branch** — start from the repository's current branch by default, then edit either value before creating an isolated worktree
+- **Base branch + worktree branch** — start from the repository's current branch by default, then edit either value before creating an isolated worktree. Worktrees are created outside your project folder (under the app data directory), so repositories stay clean and `.gitignore` is never touched
 - **Git identity** — commit as a coworker, not yourself
 - **Skip permissions** — for fully-autonomous runs when you trust the prompt
 - **Context injection** — pin files, folders, or MCP servers via the **Context Manager** (save sets, reuse across sessions)

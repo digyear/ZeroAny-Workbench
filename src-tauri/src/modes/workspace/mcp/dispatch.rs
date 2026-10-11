@@ -4,6 +4,7 @@
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
 
+use crate::modes::agent::worktree::project_root_from_marker;
 use crate::shared::repos::{coworkers as coworker_repo, sessions as session_repo, workspaces as repo};
 
 /// Resolve the actor to record on a write. When the calling agent passes
@@ -75,10 +76,23 @@ fn resolve_canonical_project_path(input: &str) -> String {
         })
         .unwrap_or_else(|| trimmed.to_string());
 
-    // 2. Walk path components looking for `.zeroany-worktrees`. If found,
-    //    return the parent of that segment (the project root). Component
-    //    walk handles both `/` and `\` separators uniformly.
     let pb = std::path::PathBuf::from(&realpath);
+
+    // 2. Managed worktree layout. Worktrees are created outside the checkout
+    //    (`<app_data>/worktrees/<project-slug>-<hash>/<checkout>`), so the
+    //    container's `.zeroany-project` marker is what names the owning
+    //    project — also after the checkout itself has been removed and Git can
+    //    no longer answer `rev-parse` for the old cwd.
+    if let Some(project_root) = project_root_from_marker(&pb) {
+        if let Some(s) = project_root.into_os_string().into_string().ok() {
+            return s;
+        }
+    }
+
+    // 3. Legacy in-project layout: walk path components looking for
+    //    `.zeroany-worktrees`. If found, return the parent of that segment
+    //    (the project root). Component walk handles both `/` and `\`
+    //    separators uniformly.
     let mut before_marker: std::path::PathBuf = std::path::PathBuf::new();
     let mut hit_marker = false;
     for comp in pb.components() {

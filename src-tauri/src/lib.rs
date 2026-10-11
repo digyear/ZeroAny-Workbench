@@ -117,6 +117,10 @@ pub fn run() {
                     .expect("failed to open ZeroAny Workbench database");
 
             cloud::snapshots::init(&app_data_dir);
+            // Worktrees live outside the checkout, under this app data dir
+            // (`worktrees/<project>-<hash>/...`). Resolve the root once here so
+            // the worktree commands and session discovery agree on one location.
+            modes::agent::worktree::init_worktrees_root(&app_data_dir);
 
             tauri::async_runtime::block_on(async { db::migrator::run(&pool).await })
                 .expect("failed to apply schema migrations");
