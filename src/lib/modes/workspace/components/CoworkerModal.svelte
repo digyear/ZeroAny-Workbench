@@ -100,16 +100,21 @@
   // Re-init the form when the modal opens with new data.
   $effect(() => {
     if (show) {
+      // Derive initial values from `existing` into locals FIRST. Reading
+      // `provider`/`profile` state inside this effect would make them
+      // dependencies — clicking a provider pill would re-run the effect and
+      // silently reset the user's pick back to the initial value.
+      const initialProvider = existing?.provider ?? 'claude';
       name         = existing?.name ?? '';
       role         = existing?.role ?? '';
       systemPrompt = existing?.systemPrompt ?? '';
       avatarSeed   = existing?.avatarSeed ?? '';
       avatarStyle  = existing?.avatarStyle ?? 'bottts';
-      provider     = existing?.provider ?? 'claude';
+      provider     = initialProvider;
       profile      = existing?.profile ?? '';
       confirmingDelete = false;
       showProRequired = false;
-      if (provider === 'hermes') void loadHermesProfiles();
+      if (initialProvider === 'hermes') void loadHermesProfiles();
     }
   });
 
