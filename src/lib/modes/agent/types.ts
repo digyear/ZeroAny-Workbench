@@ -31,6 +31,10 @@ export interface AgentSession {
   binaryPath: string | null;
   /** Provider-native profile persisted for deterministic reopen/resume. */
   profile: string | null;
+  /** Provider-native external id of the session this one was forked from
+   *  (copied from the discovered row on adopt). Matches the parent managed
+   *  session's `claudeSessionId`; null for non-forked sessions. */
+  parentExternalSessionId: string | null;
 }
 
 /** Provider ids that map to a `CliRunner` in `runner_for`. */

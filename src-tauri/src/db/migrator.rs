@@ -77,6 +77,15 @@ mod tests {
         .unwrap();
         assert_eq!(profile_count, 1);
 
+        let fork_parent_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('agent_sessions') \
+             WHERE name = 'parent_external_session_id'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(fork_parent_count, 1);
+
         let worktree_enabled_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('agent_sessions') \
              WHERE name = 'worktree_enabled'",

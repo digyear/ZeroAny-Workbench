@@ -12,7 +12,7 @@
   import { PROVIDER_INSTALL_INFO, type AgentProvider } from '$lib/shared/agent/providers';
   import { showToast } from '$lib/shared/primitives/toast';
   import { friendlyError } from '$lib/utils/errors';
-  import { orderForkTree } from '../forkTree';
+  import { orderForkTree, orderManagedForkTree, type ForkTreeRow } from '../forkTree';
 
   interface Props {
     searchQuery?: string;
@@ -179,11 +179,15 @@
       if (!groups.has(key)) groups.set(key, { name: s.projectName || 'Untitled', sessions: [] });
       groups.get(key)!.sessions.push(s);
     }
-    // Sort sessions within each group by lastUsedAt descending
-    for (const [, group] of groups) {
+    // Sort each group by lastUsedAt desc, then nest fork children under the
+    // session they branched from — same interaction as the Session Center and
+    // the DISCOVERED preview, applied within the project group.
+    const out = new Map<string, { name: string; rows: ForkTreeRow<AgentSession>[] }>();
+    for (const [key, group] of groups) {
       group.sessions.sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt));
+      out.set(key, { name: group.name, rows: orderManagedForkTree(group.sessions) });
     }
-    return groups;
+    return out;
   });
 
   function handleNewSession() {
@@ -345,7 +349,7 @@
               <span class="ncoll-name">{group.name}</span>
             </div>
             <div class="ncoll-row-bot">
-              <span class="ncoll-sub">{group.sessions.length} session{group.sessions.length === 1 ? '' : 's'}</span>
+              <span class="ncoll-sub">{group.rows.length} session{group.rows.length === 1 ? '' : 's'}</span>
             </div>
           </div>
           <svg class="ncoll-arr" class:open={!isCollapsed} viewBox="0 0 24 24">
@@ -354,7 +358,7 @@
         </div>
 
       {#if !isCollapsed}
-        {#each group.sessions as session (session.id)}
+        {#each group.rows as { session, depth } (session.id)}
           {@const pct = contextPercent(session.id)}
           {@const activity = activityStatus(session.id)}
           {@const awaiting = isAwaiting(session.id)}
@@ -362,9 +366,12 @@
             class="session-item"
             class:active={$activeAgentSession?.id === session.id}
             class:awaiting
+            class:session-fork={depth > 0}
+            style:padding-left="{8 + depth * 12}px"
             onclick={() => handleSelectSession(session)}
             oncontextmenu={(e) => showSessionMenu(e, session)}
           >
+            {#if depth > 0}<span class="session-fork-mark" title="Forked session">⑂</span>{/if}
             <span class="session-icon">
               {#if awaiting}
                 <span class="awaiting-dot" title="Waiting for your input"></span>
@@ -593,6 +600,8 @@
   .ncoll-arr.open { transform: rotate(90deg); }
 
   /* Session item */
+  .session-item.session-fork { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--acc) 22%, transparent); }
+  .session-fork-mark { flex:none; color:var(--t4); font-size:10px; line-height:1; margin-left:-2px; }
   .session-item {
     width: 100%;
     min-height: 46px;

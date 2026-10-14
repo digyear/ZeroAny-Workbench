@@ -1028,8 +1028,8 @@ pub async fn adopt_discovered_session_by_id(
                 id, title, purpose, project_path, project_root, project_name, claude_session_id,
                 context_prompt, skip_permissions, git_name, git_email,
                 created_at, last_used_at, origin, provider, binary_path,
-                profile, base_branch, worktree_branch
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)",
+                profile, base_branch, worktree_branch, parent_external_session_id
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?, ?)",
         )
         .bind(&session_id)
         .bind(&title)
@@ -1049,6 +1049,9 @@ pub async fn adopt_discovered_session_by_id(
         .bind(discovered.profile.as_deref())
         .bind(Option::<&str>::None)
         .bind(Option::<&str>::None)
+        // Carry the fork lineage over so the managed session nests under its
+        // parent in the left nav just like it did in the Session Center.
+        .bind(discovered.parent_external_session_id.as_deref())
         .execute(&mut *conn)
         .await
         .map_err(|e| e.to_string())?;
@@ -3996,7 +3999,8 @@ mod discovery_tests {
                 card_id TEXT,
                 provider TEXT NOT NULL DEFAULT 'claude',
                 binary_path TEXT,
-                profile TEXT
+                profile TEXT,
+                parent_external_session_id TEXT
             );
             CREATE TABLE agent_discovered_sessions (
                 id TEXT PRIMARY KEY,
@@ -4123,11 +4127,11 @@ mod discovery_tests {
             "INSERT INTO agent_discovered_sessions (
                 id, provider, external_session_id, project_path, project_root, project_name,
                 title, preview, created_at, updated_at, last_seen_at,
-                session_kind
+                session_kind, parent_external_session_id
              ) VALUES (?, 'codex', 'resume-codex-1', ?, ?, 'imported-task',
                 'Imported Codex', 'First imported prompt',
                 '2026-07-24T00:00:00Z', '2026-07-24T01:00:00Z',
-                '2026-07-24T02:00:00Z', 'conversation')",
+                '2026-07-24T02:00:00Z', 'conversation', 'parent-ext-1')",
         )
         .bind("codex:resume-codex-1")
         .bind(&worktree_path)
@@ -4156,6 +4160,11 @@ mod discovery_tests {
         assert_eq!(first.worktree_path, None);
         assert_eq!(first.worktree_branch, None);
         assert_eq!(first.base_branch, None);
+        // Fork lineage rides along so the managed row nests like the discovered one.
+        assert_eq!(
+            first.parent_external_session_id.as_deref(),
+            Some("parent-ext-1")
+        );
 
         let managed_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM agent_sessions WHERE provider = 'codex' AND claude_session_id = 'resume-codex-1'",

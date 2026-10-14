@@ -266,11 +266,33 @@ pub async fn update_session_claude_id(
     id: &str,
     claude_session_id: Option<&str>,
 ) -> Result<(), sqlx::Error> {
+    // Read the previous external id first: managed fork children store their
+    // parent's external id in parent_external_session_id, and when a parent's
+    // tip advances (Hermes compression recapture) those references must follow,
+    // or the left-nav nesting silently breaks.
+    let previous: Option<String> =
+        sqlx::query_scalar("SELECT claude_session_id FROM agent_sessions WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
     sqlx::query("UPDATE agent_sessions SET claude_session_id = ? WHERE id = ?")
         .bind(claude_session_id)
         .bind(id)
         .execute(pool)
         .await?;
+    if let (Some(old), Some(new)) = (previous, claude_session_id) {
+        if !old.is_empty() && old != new {
+            sqlx::query(
+                "UPDATE agent_sessions SET parent_external_session_id = ? \
+                 WHERE parent_external_session_id = ?",
+            )
+            .bind(new)
+            .bind(old)
+            .execute(pool)
+            .await?;
+        }
+    }
     Ok(())
 }
 
@@ -450,5 +472,64 @@ mod tests {
         assert_eq!(session.profile.as_deref(), Some("work"));
         assert_eq!(session.worktree_enabled, 0);
         assert_eq!(session.project_root.as_deref(), Some("/tmp/project"));
+    }
+
+    #[tokio::test]
+    async fn updating_session_external_id_repoints_fork_children() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::db::migrator::run(&pool).await.unwrap();
+
+        for (id, title) in [("parent-1", "Parent"), ("child-1", "Child")] {
+            insert_session(
+                &pool,
+                id,
+                title,
+                "External",
+                "/tmp/project",
+                Some("/tmp/project"),
+                "project",
+                "",
+                0,
+                None,
+                None,
+                "2026-08-01T00:00:00Z",
+                "2026-08-01T00:00:00Z",
+                "hermes",
+                None,
+                None,
+                None,
+                None,
+                1,
+            )
+            .await
+            .unwrap();
+        }
+        update_session_claude_id(&pool, "parent-1", Some("ext-old"))
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE agent_sessions SET parent_external_session_id = 'ext-old' WHERE id = 'child-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // A tip advance (Hermes compression recapture) must drag fork children
+        // along, or left-nav nesting silently breaks.
+        update_session_claude_id(&pool, "parent-1", Some("ext-new"))
+            .await
+            .unwrap();
+        let child = get_session_by_id(&pool, "child-1").await.unwrap();
+        assert_eq!(child.parent_external_session_id.as_deref(), Some("ext-new"));
+
+        // Clearing the parent's external id (reset) has no new id to point at;
+        // the child keeps its last known parent reference.
+        update_session_claude_id(&pool, "parent-1", None).await.unwrap();
+        let child = get_session_by_id(&pool, "child-1").await.unwrap();
+        assert_eq!(child.parent_external_session_id.as_deref(), Some("ext-new"));
     }
 }

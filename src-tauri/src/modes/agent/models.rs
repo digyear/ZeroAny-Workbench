@@ -59,6 +59,12 @@ pub struct AgentSession {
     /// Provider-native profile selected when the session was created.
     /// Currently used by Hermes; `None` preserves legacy/default behavior.
     pub profile: Option<String>,
+    /// Provider-native external id of the session this one was forked from
+    /// (Hermes `_branched_from`, remapped to the parent's visible tip at
+    /// discovery). Copied from the discovered row on adopt; `None` for
+    /// manually created sessions. Drives fork nesting in the left nav.
+    #[sqlx(default)]
+    pub parent_external_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
