@@ -145,7 +145,57 @@
       ? baseFiltered
       : baseFiltered.filter((session) => canonicalProjectPath(session) === selectedProject),
   );
-  const visibleSessions = $derived(filteredSessions.slice(0, visibleLimit));
+
+  // Nest forked sessions under the session they were branched from, mirroring
+  // the Hermes Desktop sidebar: a /branch child (parent_external_session_id set
+  // to a session that's also in view) renders indented directly beneath its
+  // parent instead of floating to its own recency slot. Roots keep the existing
+  // updatedAt-desc order; each root's children follow it, also recency-sorted.
+  // A child whose parent is NOT in the current view (filtered out, different
+  // project, or pre-marker) stays a top-level root — indenting an orphan under
+  // an invisible parent would just look like a stray gap.
+  const sessionRows = $derived.by(() => {
+    const list = filteredSessions;
+    const byExternal = new Map<string, AgentDiscoveredSession>();
+    for (const s of list) {
+      if (s.externalSessionId) byExternal.set(s.externalSessionId, s);
+    }
+    const childrenOf = new Map<string, AgentDiscoveredSession[]>();
+    const roots: AgentDiscoveredSession[] = [];
+    for (const s of list) {
+      const pid = s.parentExternalSessionId;
+      if (pid && pid !== s.externalSessionId && byExternal.has(pid)) {
+        const bucket = childrenOf.get(pid);
+        if (bucket) bucket.push(s);
+        else childrenOf.set(pid, [s]);
+      } else {
+        roots.push(s);
+      }
+    }
+    const rows: { session: AgentDiscoveredSession; depth: number }[] = [];
+    const seen = new Set<string>();
+    const walk = (session: AgentDiscoveredSession, depth: number) => {
+      if (seen.has(session.id)) return; // cycle guard
+      seen.add(session.id);
+      rows.push({ session, depth: Math.min(depth, 4) });
+      const kids = childrenOf.get(session.externalSessionId);
+      if (kids) for (const kid of kids) walk(kid, depth + 1);
+    };
+    for (const root of roots) walk(root, 0);
+    // Safety net: anything unplaced (shouldn't happen) still renders flat.
+    for (const s of list) if (!seen.has(s.id)) rows.push({ session: s, depth: 0 });
+    return rows;
+  });
+
+  const depthById = $derived.by(() => {
+    const map = new Map<string, number>();
+    for (const row of sessionRows) map.set(row.session.id, row.depth);
+    return map;
+  });
+
+  const visibleSessions = $derived(
+    sessionRows.slice(0, visibleLimit).map((row) => row.session),
+  );
   const selectedVisibleCount = $derived(visibleSessions.filter((session) => selectedIds.includes(session.id)).length);
   const allVisibleSelected = $derived(visibleSessions.length > 0 && selectedVisibleCount === visibleSessions.length);
 
@@ -441,10 +491,12 @@
           {#each visibleSessions as session (session.id)}
             {@const rowStatus = sessionStatus(session)}
             {@const root = canonicalProjectPath(session)}
-            <div class="sc-row" class:selected={selectedIds.includes(session.id)}>
+            {@const depth = depthById.get(session.id) ?? 0}
+            <div class="sc-row" class:selected={selectedIds.includes(session.id)} class:sc-row-fork={depth > 0}>
               <label class="sc-check"><input type="checkbox" checked={selectedIds.includes(session.id)} onchange={() => toggleSelected(session.id)} aria-label={`Select ${sessionTitle(session)}`} /></label>
-              <div class="sc-session-main">
+              <div class="sc-session-main" style:padding-left="{depth * 16}px">
                 <div class="sc-session-title">
+                  {#if depth > 0}<span class="sc-fork-mark" title="Forked session">⑂</span>{/if}
                   <img src={providerIcon(session.provider)} alt="" />
                   {#if renamingId === session.id}
                     <input
@@ -574,6 +626,8 @@
   .sc-rename-input:focus { border-color:var(--acc); }
   .sc-session-main p { margin:4px 0 2px 24px; color:var(--t3); font-size:9.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .sc-session-main code { display:block; margin-left:24px; color:var(--t4); font:8.5px var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .sc-fork-mark { flex:none; color:var(--t4); font-size:11px; line-height:1; transform:translateY(-1px); }
+  .sc-row-fork .sc-session-main { border-left:1px solid color-mix(in srgb, var(--acc) 22%, transparent); }
   .sc-row-project { display:flex; flex-direction:column; gap:3px; }
   .sc-row-project strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--t2); font-size:10px; }
   .sc-row-project span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--t4); font:8.5px var(--mono); }

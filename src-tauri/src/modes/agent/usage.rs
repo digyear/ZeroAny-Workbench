@@ -1793,6 +1793,8 @@ async fn query_hermes_sessions(
         root_id: String,
         id: String,
         parent_session_id: Option<String>,
+        root_branched_from: Option<String>,
+        root_parent_session_id: Option<String>,
         title: String,
         preview: String,
         cwd: String,
@@ -1851,6 +1853,8 @@ async fn query_hermes_sessions(
         SELECT c.root_id,
                s.id,
                s.parent_session_id,
+               json_extract(COALESCE(root_session.model_config, '{}'), '$._branched_from') AS root_branched_from,
+               root_session.parent_session_id AS root_parent_session_id,
                COALESCE(s.title, '') AS title,
                COALESCE((
                    SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 80)
@@ -1914,6 +1918,8 @@ async fn query_hermes_sessions(
         SELECT c.root_id,
                s.id,
                s.parent_session_id,
+               json_extract(COALESCE(root_session.model_config, '{}'), '$._branched_from') AS root_branched_from,
+               root_session.parent_session_id AS root_parent_session_id,
                COALESCE(s.title, '') AS title,
                COALESCE((
                    SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 80)
@@ -1949,10 +1955,37 @@ async fn query_hermes_sessions(
     }
 
     let mut discovered = Vec::with_capacity(by_root.len());
+    // Map every id in a root's compression chain to that chain's projected tip.
+    // A fork child references its parent by the id that existed at branch time
+    // (the parent's root or a mid segment); remapping through this table lets the
+    // child nest under the parent's VISIBLE row even after the parent compressed.
+    let mut member_to_tip: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for (root_id, nodes) in by_root {
-        let Some(mut tip) = nodes.iter().find(|n| n.id == root_id).cloned() else {
+        let Some(root_node) = nodes.iter().find(|n| n.id == root_id) else {
             continue;
         };
+        // The fork/branch parent is a property of the chain ROOT, not the tip:
+        // a branched child that later got compressed would otherwise report its
+        // compression predecessor as "parent" and lose the fork link. Roots are
+        // admitted either as true roots (no parent) or as /branch children, so
+        // `_branched_from` (stable marker) or the root's own parent_session_id
+        // (legacy 'branched' heuristic) identifies the fork source. True roots
+        // have neither → None → rendered un-indented.
+        let fork_parent = root_node
+            .root_branched_from
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                root_node
+                    .root_parent_session_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            })
+            .map(|s| s.to_string());
+        let mut tip = root_node.clone();
         let mut seen = std::collections::HashSet::from([tip.id.clone()]);
         for _ in 0..100 {
             if tip.end_reason.as_deref() != Some("compression") {
@@ -1983,6 +2016,9 @@ async fn query_hermes_sessions(
                 break;
             }
             tip = next;
+        }
+        for node in &nodes {
+            member_to_tip.insert(node.id.clone(), tip.id.clone());
         }
 
         let timestamp = tip.last_active;
@@ -2015,7 +2051,7 @@ async fn query_hermes_sessions(
                 updated_at: chrono::DateTime::<chrono::Utc>::from_timestamp(secs, nanos)
                     .map(|d| d.to_rfc3339())
                     .or_else(|| Some(chrono::Utc::now().to_rfc3339())),
-                parent_external_session_id: tip.parent_session_id,
+                parent_external_session_id: fork_parent,
                 session_kind: Some(
                     if tip.source.trim().is_empty() {
                         "conversation"
@@ -2027,6 +2063,24 @@ async fn query_hermes_sessions(
                 source_path: Some(db_path.to_string_lossy().to_string()),
             },
         ));
+    }
+    // Remap each fork parent through member_to_tip so a child nests under its
+    // parent's VISIBLE row even when the parent's chain was compressed to a tip
+    // (the child's stored `_branched_from` may name the parent's original root
+    // or a mid segment). A parent not in this discovered set (archived, filtered
+    // out, or a different project) leaves the id untouched — the frontend then
+    // treats the child as top-level rather than indenting under an invisible row.
+    for entry in discovered.iter_mut() {
+        let session = &mut entry.2;
+        if let Some(parent) = session.parent_external_session_id.clone() {
+            if let Some(tip_id) = member_to_tip.get(&parent) {
+                session.parent_external_session_id = if tip_id == &session.external_session_id {
+                    None // self-reference (cyclic lineage) — drop to avoid self-nesting
+                } else {
+                    Some(tip_id.clone())
+                };
+            }
+        }
     }
     discovered.sort_by(|a, b| {
         b.0.total_cmp(&a.0)
@@ -4211,6 +4265,12 @@ mod discovery_tests {
         assert_eq!(ids, vec!["regular", "branch", "tip"]);
         assert_eq!(rows[2].preview.as_deref(), Some("Live"));
         assert_eq!(rows[2].project_path.as_deref(), Some("/repo"));
+        // `branch` forked from `root`, whose compression chain projects to `tip`;
+        // the fork parent must be remapped to the visible tip id so the child
+        // nests under the row the user actually sees, not the buried root.
+        assert_eq!(rows[1].parent_external_session_id.as_deref(), Some("tip"));
+        // A plain root carries no fork parent.
+        assert_eq!(rows[0].parent_external_session_id, None);
 
         let global_rows = query_hermes_sessions(&db_path, None, 100).await.unwrap();
         let global_tip = global_rows
