@@ -12,6 +12,7 @@
   import { PROVIDER_INSTALL_INFO, type AgentProvider } from '$lib/shared/agent/providers';
   import { showToast } from '$lib/shared/primitives/toast';
   import { friendlyError } from '$lib/utils/errors';
+  import { orderForkTree } from '../forkTree';
 
   interface Props {
     searchQuery?: string;
@@ -90,8 +91,12 @@
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   });
 
-  const recentDiscoveredSessions = $derived(
-    filteredDiscoveredSessions.slice(0, searchQuery.trim() ? 20 : 6),
+  // Tree-order (fork children nested under their parent) before slicing, so the
+  // compact left-nav preview matches the Session Center. Pre-order DFS keeps a
+  // parent ahead of its children, so slicing the first N never shows a child
+  // whose parent was cut. Adopted/filtered-out parents leave their forks flat.
+  const recentDiscoveredRows = $derived(
+    orderForkTree(filteredDiscoveredSessions).slice(0, searchQuery.trim() ? 20 : 6),
   );
 
   let discoveredScanning = $state(false);
@@ -431,9 +436,10 @@
       <div class="discovered-empty">{discoveredScanning ? 'Scanning...' : 'No external sessions found'}</div>
     {:else}
       <div class="discovered-recent-label">{searchQuery.trim() ? 'MATCHES' : 'RECENT EXTERNAL'}</div>
-      {#each recentDiscoveredSessions as discovered (discovered.id)}
+      {#each recentDiscoveredRows as { session: discovered, depth } (discovered.id)}
         {@const busy = isDiscoveredBusy(discovered.id)}
-        <button class="discovered-recent" disabled={busy} title={discovered.projectPath || ''} onclick={() => handleAdoptDiscovered(discovered)}>
+        <button class="discovered-recent" class:discovered-fork={depth > 0} style:padding-left="{8 + depth * 14}px" disabled={busy} title={discovered.projectPath || ''} onclick={() => handleAdoptDiscovered(discovered)}>
+          {#if depth > 0}<span class="discovered-fork-mark" title="Forked session">⑂</span>{/if}
           <span class="discovered-recent-icon">
             {#if discovered.provider === 'codex'}
               <img src="/codex.svg" alt="Codex" />
@@ -827,6 +833,8 @@
   }
   .discovered-recent:hover { background: var(--c); }
   .discovered-recent:disabled { opacity: .55; cursor: default; }
+  .discovered-fork { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--acc) 25%, transparent); }
+  .discovered-fork-mark { flex:none; color: var(--t4); font-size: 10px; line-height: 1; }
   .discovered-recent-icon { width: 22px; height: 22px; flex:none; display:grid; place-items:center; }
   .discovered-recent-icon img { width: 19px; height: 19px; object-fit: contain; }
   .discovered-recent-copy { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }

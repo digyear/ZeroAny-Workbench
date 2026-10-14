@@ -21,6 +21,7 @@
   import { addTab, activateTab, tabs } from '$lib/shared/stores/tabs';
   import { showToast } from '$lib/shared/primitives/toast';
   import { friendlyError } from '$lib/utils/errors';
+  import { orderForkTree } from '../forkTree';
 
   type StatusFilter = 'external' | 'managed' | 'hidden' | 'all';
   type RangeFilter = '7' | '30' | '90' | 'all';
@@ -147,45 +148,9 @@
   );
 
   // Nest forked sessions under the session they were branched from, mirroring
-  // the Hermes Desktop sidebar: a /branch child (parent_external_session_id set
-  // to a session that's also in view) renders indented directly beneath its
-  // parent instead of floating to its own recency slot. Roots keep the existing
-  // updatedAt-desc order; each root's children follow it, also recency-sorted.
-  // A child whose parent is NOT in the current view (filtered out, different
-  // project, or pre-marker) stays a top-level root — indenting an orphan under
-  // an invisible parent would just look like a stray gap.
-  const sessionRows = $derived.by(() => {
-    const list = filteredSessions;
-    const byExternal = new Map<string, AgentDiscoveredSession>();
-    for (const s of list) {
-      if (s.externalSessionId) byExternal.set(s.externalSessionId, s);
-    }
-    const childrenOf = new Map<string, AgentDiscoveredSession[]>();
-    const roots: AgentDiscoveredSession[] = [];
-    for (const s of list) {
-      const pid = s.parentExternalSessionId;
-      if (pid && pid !== s.externalSessionId && byExternal.has(pid)) {
-        const bucket = childrenOf.get(pid);
-        if (bucket) bucket.push(s);
-        else childrenOf.set(pid, [s]);
-      } else {
-        roots.push(s);
-      }
-    }
-    const rows: { session: AgentDiscoveredSession; depth: number }[] = [];
-    const seen = new Set<string>();
-    const walk = (session: AgentDiscoveredSession, depth: number) => {
-      if (seen.has(session.id)) return; // cycle guard
-      seen.add(session.id);
-      rows.push({ session, depth: Math.min(depth, 4) });
-      const kids = childrenOf.get(session.externalSessionId);
-      if (kids) for (const kid of kids) walk(kid, depth + 1);
-    };
-    for (const root of roots) walk(root, 0);
-    // Safety net: anything unplaced (shouldn't happen) still renders flat.
-    for (const s of list) if (!seen.has(s.id)) rows.push({ session: s, depth: 0 });
-    return rows;
-  });
+  // the Hermes Desktop sidebar. Shared with the AgentNav discovered preview —
+  // see forkTree.ts for the ordering/orphan/cycle rules.
+  const sessionRows = $derived(orderForkTree(filteredSessions));
 
   const depthById = $derived.by(() => {
     const map = new Map<string, number>();
