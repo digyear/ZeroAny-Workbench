@@ -530,6 +530,7 @@ pub fn run() {
             modes::agent::commands::agent_update_session,
             modes::agent::commands::agent_delete_session,
             modes::agent::commands::agent_update_session_id,
+            modes::agent::commands::agent_set_session_parent,
             modes::agent::commands::agent_sync_session_title,
             modes::agent::commands::agent_update_last_used,
             modes::agent::commands::agent_update_worktree,

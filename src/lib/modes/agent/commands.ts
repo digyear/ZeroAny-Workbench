@@ -50,6 +50,8 @@ export const agentUpdateSession = (params: {
 }) => invoke<void>('agent_update_session', params);
 export const agentDeleteSession = (id: string) => invoke<void>('agent_delete_session', { id });
 export const agentUpdateSessionId = (id: string, claudeSessionId: string) => invoke<void>('agent_update_session_id', { id, claudeSessionId });
+/** Manual nesting: move `id` under `parentId`, or null/'' to detach to top-level. */
+export const agentSetSessionParent = (id: string, parentId: string | null) => invoke<void>('agent_set_session_parent', { id, parentId });
 /** Push the Workbench session title into the provider's own session store
  *  (Hermes `sessions rename` — pins `user` provenance so Hermes' first-message
  *  auto-titling never overwrites it). No-op for other providers; safe to call

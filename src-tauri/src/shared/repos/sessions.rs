@@ -296,6 +296,90 @@ pub async fn update_session_claude_id(
     Ok(())
 }
 
+/// Manual nesting (drag & drop): set or clear a session's manual parent.
+/// `None`/empty parent detaches to explicit top-level (`''`, which also
+/// suppresses automatic fork-lineage nesting in the UI).
+///
+/// Validation keeps the manual forest well-formed without the frontend
+/// having to be trusted:
+/// - both sessions must exist (and the child must be a visible manual row)
+/// - no self-parenting
+/// - no cycles: the proposed parent must not be a descendant of the child
+/// - depth cap: the child's new ancestor chain must stay under 4 levels
+pub async fn set_session_parent(
+    pool: &SqlitePool,
+    id: &str,
+    parent_id: Option<&str>,
+) -> Result<(), String> {
+    const MAX_ANCESTORS: usize = 3; // child ends up at depth <= 3 (4 visible levels)
+    let parent_id = parent_id.map(str::trim).unwrap_or("");
+
+    let child: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM agent_sessions WHERE id = ? AND origin = 'manual'",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    if child.is_none() {
+        return Err("Session not found".into());
+    }
+
+    if !parent_id.is_empty() {
+        if parent_id == id {
+            return Err("A session cannot be its own parent".into());
+        }
+        let parent: Option<String> =
+            sqlx::query_scalar("SELECT id FROM agent_sessions WHERE id = ? AND origin = 'manual'")
+                .bind(parent_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        if parent.is_none() {
+            return Err("Parent session not found".into());
+        }
+        // Walk the proposed parent's manual ancestor chain: reject cycles
+        // (child appears in it) and enforce the depth cap. Bounded walk so
+        // pre-existing corrupt data can't hang the command.
+        let mut current = parent_id.to_string();
+        let mut ancestors = 0usize;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            if current == id {
+                return Err("Cannot move a session under its own descendant".into());
+            }
+            if !seen.insert(current.clone()) {
+                break; // existing cycle in stored data — stop walking
+            }
+            let next: Option<Option<String>> =
+                sqlx::query_scalar("SELECT parent_session_id FROM agent_sessions WHERE id = ?")
+                    .bind(&current)
+                    .fetch_optional(pool)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            let Some(next_parent) = next.flatten().filter(|p| !p.is_empty()) else {
+                break;
+            };
+            current = next_parent;
+            ancestors += 1;
+            if ancestors > MAX_ANCESTORS {
+                return Err("Nesting is limited to 4 levels".into());
+            }
+        }
+    }
+
+    let result = sqlx::query("UPDATE agent_sessions SET parent_session_id = ? WHERE id = ?")
+        .bind(parent_id)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    if result.rows_affected() == 0 {
+        return Err("Session not found".into());
+    }
+    Ok(())
+}
+
 pub async fn update_session_last_used(
     pool: &SqlitePool,
     id: &str,
@@ -531,5 +615,90 @@ mod tests {
         update_session_claude_id(&pool, "parent-1", None).await.unwrap();
         let child = get_session_by_id(&pool, "child-1").await.unwrap();
         assert_eq!(child.parent_external_session_id.as_deref(), Some("ext-new"));
+    }
+
+    async fn seed_manual_sessions(pool: &SqlitePool, ids: &[&str]) {
+        for id in ids {
+            insert_session(
+                pool,
+                id,
+                id,
+                "Custom",
+                "/tmp/project",
+                Some("/tmp/project"),
+                "project",
+                "",
+                0,
+                None,
+                None,
+                "2026-08-01T00:00:00Z",
+                "2026-08-01T00:00:00Z",
+                "hermes",
+                None,
+                None,
+                None,
+                None,
+                1,
+            )
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_parent_nesting_validates_and_detaches() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::db::migrator::run(&pool).await.unwrap();
+        seed_manual_sessions(&pool, &["a", "b", "c", "d", "e", "f"]).await;
+
+        // Basic nesting: b under a.
+        set_session_parent(&pool, "b", Some("a")).await.unwrap();
+        assert_eq!(
+            get_session_by_id(&pool, "b").await.unwrap().parent_session_id.as_deref(),
+            Some("a")
+        );
+
+        // Self-parenting rejected.
+        let err = set_session_parent(&pool, "a", Some("a")).await.unwrap_err();
+        assert!(err.contains("own parent"), "{err}");
+
+        // Cycle rejected: a under b (b is already under a).
+        let err = set_session_parent(&pool, "a", Some("b")).await.unwrap_err();
+        assert!(err.contains("descendant"), "{err}");
+
+        // Unknown parent rejected.
+        let err = set_session_parent(&pool, "c", Some("nope")).await.unwrap_err();
+        assert!(err.contains("not found"), "{err}");
+
+        // Depth cap: a←b←c←d←e is 4 levels (allowed), f under e is the 5th (rejected).
+        set_session_parent(&pool, "c", Some("b")).await.unwrap();
+        set_session_parent(&pool, "d", Some("c")).await.unwrap();
+        set_session_parent(&pool, "e", Some("d")).await.unwrap();
+        let err = set_session_parent(&pool, "f", Some("e")).await.unwrap_err();
+        assert!(err.contains("4 levels"), "{err}");
+
+        // Detach writes '' (explicit top-level), not NULL.
+        set_session_parent(&pool, "b", None).await.unwrap();
+        assert_eq!(
+            get_session_by_id(&pool, "b").await.unwrap().parent_session_id.as_deref(),
+            Some("")
+        );
+
+        // Hidden card sessions cannot be dragged (child must be a manual row).
+        sqlx::query(
+            "INSERT INTO agent_sessions (id, title, purpose, project_path, project_name, \
+             created_at, last_used_at, origin, card_id) \
+             VALUES ('card-1','Card','Custom','/tmp/project','project', \
+             '2026-08-01T00:00:00Z','2026-08-01T00:00:00Z','card','card-x')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let err = set_session_parent(&pool, "card-1", Some("a")).await.unwrap_err();
+        assert!(err.contains("not found"), "{err}");
     }
 }

@@ -35,6 +35,10 @@ export interface AgentSession {
    *  (copied from the discovered row on adopt). Matches the parent managed
    *  session's `claudeSessionId`; null for non-forked sessions. */
   parentExternalSessionId: string | null;
+  /** Manual nesting (drag & drop), an agent_sessions.id reference.
+   *  Tri-state: null = auto (fork lineage), '' = explicitly top-level,
+   *  uuid = manual child of that session. */
+  parentSessionId: string | null;
 }
 
 /** Provider ids that map to a `CliRunner` in `runner_for`. */

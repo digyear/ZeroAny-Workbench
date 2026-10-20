@@ -65,6 +65,11 @@ pub struct AgentSession {
     /// manually created sessions. Drives fork nesting in the left nav.
     #[sqlx(default)]
     pub parent_external_session_id: Option<String>,
+    /// Manual nesting (drag & drop), referencing `agent_sessions.id`.
+    /// Tri-state: `None` = auto (use fork lineage), `Some("")` = explicitly
+    /// top-level, `Some(uuid)` = manual child of that session.
+    #[sqlx(default)]
+    pub parent_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

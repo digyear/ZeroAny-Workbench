@@ -8,7 +8,7 @@
   import { get } from 'svelte/store';
   import { AGENT_EVENT } from '$lib/shared/constants/events';
   import ConfirmDialog from '$lib/shared/primitives/ConfirmDialog.svelte';
-  import { agentAdoptDiscoveredSession, agentWorktreeIsDirty } from '../commands';
+  import { agentAdoptDiscoveredSession, agentWorktreeIsDirty, agentSetSessionParent } from '../commands';
   import { PROVIDER_INSTALL_INFO, type AgentProvider } from '$lib/shared/agent/providers';
   import { showToast } from '$lib/shared/primitives/toast';
   import { friendlyError } from '$lib/utils/errors';
@@ -222,6 +222,42 @@
     saveCollapsed(next);
   }
 
+  // ─── Drag & drop manual nesting ───
+  // Drag a session onto another session in the SAME project group → becomes
+  // its child (indented). Drag onto the group header → detach to top-level
+  // (also suppresses automatic fork-lineage nesting for that row). The manual
+  // parent reference is an internal agent_sessions.id, so it never drifts
+  // with provider resume ids.
+  let dragSource = $state<{ id: string; groupKey: string } | null>(null);
+  let dropTargetId = $state<string | null>(null);
+  let dropHeaderKey = $state<string | null>(null);
+
+  function onSessionDragStart(e: DragEvent, session: AgentSession, groupKey: string) {
+    dragSource = { id: session.id, groupKey };
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', session.id);
+    }
+  }
+  function onSessionDragEnd() {
+    dragSource = null;
+    dropTargetId = null;
+    dropHeaderKey = null;
+  }
+  function canDropOn(targetId: string, groupKey: string): boolean {
+    return !!dragSource && dragSource.groupKey === groupKey && dragSource.id !== targetId;
+  }
+  async function applyParent(childId: string, parentId: string | null) {
+    try {
+      await agentSetSessionParent(childId, parentId);
+      await loadAgentSessions();
+    } catch (err) {
+      showToast(friendlyError(err) || 'Failed to move session', 'error');
+    } finally {
+      onSessionDragEnd();
+    }
+  }
+
   function contextPercent(sessionId: string): number | null {
     const usage = $agentContextUsage.get(sessionId);
     return usage ? Math.round(usage.fillPercent) : null;
@@ -340,7 +376,23 @@
       <div class="ncoll">
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="ncoll-hdr" onclick={() => toggleProject(projectKey)}>
+        <div
+          class="ncoll-hdr"
+          class:drop-detach={dropHeaderKey === projectKey}
+          title={dragSource?.groupKey === projectKey ? 'Drop here to move to top level' : undefined}
+          onclick={() => toggleProject(projectKey)}
+          ondragover={(e) => {
+            if (dragSource && dragSource.groupKey === projectKey) {
+              e.preventDefault();
+              dropHeaderKey = projectKey;
+            }
+          }}
+          ondragleave={() => { if (dropHeaderKey === projectKey) dropHeaderKey = null; }}
+          ondrop={(e) => {
+            e.preventDefault();
+            if (dragSource && dragSource.groupKey === projectKey) void applyParent(dragSource.id, null);
+          }}
+        >
           <div class="coll-icon coll-icon-accent">
             <svg viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           </div>
@@ -367,7 +419,25 @@
             class:active={$activeAgentSession?.id === session.id}
             class:awaiting
             class:session-fork={depth > 0}
+            class:dragging={dragSource?.id === session.id}
+            class:drop-nest={dropTargetId === session.id}
             style:padding-left="{8 + depth * 12}px"
+            draggable="true"
+            ondragstart={(e) => onSessionDragStart(e, session, projectKey)}
+            ondragend={onSessionDragEnd}
+            ondragover={(e) => {
+              if (canDropOn(session.id, projectKey)) {
+                e.preventDefault();
+                dropTargetId = session.id;
+              }
+            }}
+            ondragleave={() => { if (dropTargetId === session.id) dropTargetId = null; }}
+            ondrop={(e) => {
+              e.preventDefault();
+              if (canDropOn(session.id, projectKey) && dragSource) {
+                void applyParent(dragSource.id, session.id);
+              }
+            }}
             onclick={() => handleSelectSession(session)}
             oncontextmenu={(e) => showSessionMenu(e, session)}
           >
@@ -602,6 +672,10 @@
   /* Session item */
   .session-item.session-fork { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--acc) 22%, transparent); }
   .session-fork-mark { flex:none; color:var(--t4); font-size:10px; line-height:1; margin-left:-2px; }
+  /* Drag & drop manual nesting */
+  .session-item.dragging { opacity: .45; }
+  .session-item.drop-nest { box-shadow: inset 0 0 0 1.5px var(--acc); border-radius: 7px; }
+  .ncoll-hdr.drop-detach { box-shadow: inset 0 0 0 1.5px var(--acc); border-radius: 7px; }
   .session-item {
     width: 100%;
     min-height: 46px;

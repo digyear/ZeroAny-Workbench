@@ -192,6 +192,18 @@ pub async fn agent_update_session_id(pool: State<'_, SqlitePool>, id: String, cl
     sessions_repo::update_session_claude_id(pool.inner(), &id, val.as_deref()).await.map_err(|e| e.to_string())
 }
 
+/// Manual nesting (drag & drop in the left nav): move `id` under `parent_id`,
+/// or detach to top-level when `parent_id` is None/empty. Validation (cycles,
+/// depth, existence) lives in the repo so it holds for every caller.
+#[tauri::command]
+pub async fn agent_set_session_parent(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    parent_id: Option<String>,
+) -> Result<(), String> {
+    sessions_repo::set_session_parent(pool.inner(), &id, parent_id.as_deref()).await
+}
+
 /// Push the Workbench session title into the provider's own session store.
 ///
 /// Hermes >= 0.20 auto-titles a session from the first user message, so
