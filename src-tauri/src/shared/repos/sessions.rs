@@ -253,6 +253,43 @@ pub async fn update_session_context_prompt(
     Ok(())
 }
 
+/// Sessions that would render nested under `id` in the left nav: manual
+/// children (`parent_session_id`) plus auto fork-lineage children whose
+/// `parent_external_session_id` matches this session's resume id and that
+/// carry no manual override (a detached `''` or a manual parent elsewhere
+/// means the row no longer nests here). Hidden card sessions never render
+/// in the nav, so they don't count. Used to block deleting a parent.
+pub async fn count_child_sessions(pool: &SqlitePool, id: &str) -> Result<i64, sqlx::Error> {
+    let external: Option<String> =
+        sqlx::query_scalar("SELECT claude_session_id FROM agent_sessions WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+    let manual: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM agent_sessions \
+         WHERE parent_session_id = ? AND origin = 'manual' AND id != ?",
+    )
+    .bind(id)
+    .bind(id)
+    .fetch_one(pool)
+    .await?;
+    let mut total = manual;
+    if let Some(ext) = external.filter(|e| !e.trim().is_empty()) {
+        let lineage: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM agent_sessions \
+             WHERE parent_external_session_id = ? AND parent_session_id IS NULL \
+               AND origin = 'manual' AND id != ?",
+        )
+        .bind(ext)
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+        total += lineage;
+    }
+    Ok(total)
+}
+
 pub async fn delete_session(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM agent_sessions WHERE id = ?")
         .bind(id)
@@ -700,5 +737,48 @@ mod tests {
         .unwrap();
         let err = set_session_parent(&pool, "card-1", Some("a")).await.unwrap_err();
         assert!(err.contains("not found"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn child_count_blocks_delete_for_manual_and_lineage_children() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        crate::db::migrator::run(&pool).await.unwrap();
+        seed_manual_sessions(&pool, &["p", "m", "l", "d"]).await;
+        // Parent resume id — lineage children reference this.
+        update_session_claude_id(&pool, "p", Some("ext-p")).await.unwrap();
+
+        // No children yet.
+        assert_eq!(count_child_sessions(&pool, "p").await.unwrap(), 0);
+
+        // Manual child counts.
+        set_session_parent(&pool, "m", Some("p")).await.unwrap();
+        assert_eq!(count_child_sessions(&pool, "p").await.unwrap(), 1);
+
+        // Auto fork-lineage child counts (parent_external matches resume id).
+        sqlx::query(
+            "UPDATE agent_sessions SET parent_external_session_id = 'ext-p' WHERE id = 'l'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count_child_sessions(&pool, "p").await.unwrap(), 2);
+
+        // A detached row ('' manual override) no longer counts as a child.
+        sqlx::query(
+            "UPDATE agent_sessions SET parent_external_session_id = 'ext-p', parent_session_id = '' WHERE id = 'd'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count_child_sessions(&pool, "p").await.unwrap(), 2);
+
+        // Detaching the manual child drops the count; deleting stays blocked
+        // while the lineage child remains.
+        set_session_parent(&pool, "m", None).await.unwrap();
+        assert_eq!(count_child_sessions(&pool, "p").await.unwrap(), 1);
     }
 }

@@ -98,3 +98,17 @@ export function orderManagedForkTree(list: AgentSession[]): ForkTreeRow<AgentSes
     return null;
   });
 }
+
+/** Rows of `list` that would render nested directly under `target` — same
+ *  resolution as orderManagedForkTree. Used to block deleting a session that
+ *  still has visible children. */
+export function childRowsOf(list: AgentSession[], target: AgentSession): AgentSession[] {
+  return list.filter((s) => {
+    if (s.id === target.id) return false;
+    const manual = s.parentSessionId;
+    if (manual === target.id) return true;
+    if (manual != null) return false; // detached ('') or manual child elsewhere
+    const ext = s.parentExternalSessionId;
+    return !!ext && !!target.claudeSessionId && ext === target.claudeSessionId;
+  });
+}

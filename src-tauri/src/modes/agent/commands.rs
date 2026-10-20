@@ -182,6 +182,18 @@ pub async fn agent_update_session(
 
 #[tauri::command]
 pub async fn agent_delete_session(pool: State<'_, SqlitePool>, id: String) -> Result<(), String> {
+    // Guard: a session with children nested under it (manual drag&drop or
+    // automatic fork lineage) cannot be deleted — the children would lose
+    // their visible parent. Move them out or delete them first.
+    let children = sessions_repo::count_child_sessions(pool.inner(), &id)
+        .await
+        .map_err(|e| e.to_string())?;
+    if children > 0 {
+        return Err(format!(
+            "This session has {children} child session(s) nested under it. \
+             Move them to top level (drag onto the project header) or delete them first."
+        ));
+    }
     sessions_repo::delete_session(pool.inner(), &id).await.map_err(|e| e.to_string())?;
     Ok(())
 }

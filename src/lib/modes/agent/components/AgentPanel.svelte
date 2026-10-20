@@ -62,6 +62,7 @@
   import { showToast } from '$lib/shared/primitives/toast';
   import { errorToast, friendlyError } from '$lib/utils/errors';
   import { refreshAgentGitStatus, refreshAgentContextUsage, loadAgentSessions, agentGitBranchName, agentGitFiles, agentGitAhead, agentGitBehind } from '../stores';
+  import { childRowsOf } from '../forkTree';
   import { getTerminalTheme } from '$lib/utils/theme';
   import { platform } from '$lib/utils/platform';
   import { appearance } from '$lib/stores/settings';
@@ -1850,6 +1851,19 @@
     if (!detail?.session) return;
     const session = detail.session;
     const force = detail.force === true;
+
+    // Guard BEFORE any destructive cleanup (worktree removal happens first):
+    // a session with children nested under it cannot be deleted. The backend
+    // enforces this too, but checking here avoids tearing down the worktree
+    // of a session whose DB delete will be refused.
+    const children = childRowsOf(get(agentSessions), session);
+    if (children.length > 0) {
+      showToast(
+        `This session has ${children.length} child session(s) nested under it. Move them to top level (drag onto the project header) or delete them first.`,
+        'error',
+      );
+      return;
+    }
 
     // Kill terminal
     const tIds = get(agentTerminalIds);
