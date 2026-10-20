@@ -79,6 +79,8 @@ Per-session controls:
 - **Context injection** — pin files, folders, or MCP servers via the **Context Manager** (save sets, reuse across sessions)
 - **Plugins** — load extra tools from the **Plugin Manager**
 - **Resume** — reopen the provider's original conversation instead of silently starting a new one
+- **Session nesting** — one requirement often spawns several conversations. Drag a session onto another to nest it as a child (up to 4 levels); drag onto the project header to move it back to top level. Manual nesting works for every provider and pins to internal session ids, so it never drifts when resume ids advance. Hermes fork lineage additionally nests `/branch` children automatically
+- **Delete protection** — a session with children nested under it cannot be deleted until the children are moved out or removed; the check runs before any worktree cleanup, so a refused delete leaves everything intact
 
 #### Session Center
 
@@ -89,6 +91,8 @@ ZeroAny Workbench does not limit you to sessions created inside the app. The glo
 - **Search and filters** — filter by provider, project, date range, and status; search titles, previews, paths, native session IDs, and Hermes profile names
 - **Profile-safe identity** — identical Hermes session IDs in different profiles remain separate, and adopted sessions resume with their original profile
 - **Adopt or hide** — open an external conversation as a managed ZeroAny Workbench session, or hide catalog entries without deleting provider-owned data
+- **Fork nesting** — Hermes `/branch` children render indented under the session they forked from, in the Session Center and the sidebar alike; lineage is remapped through compression tips, so nesting survives long conversations
+- **Local rename** — give any discovered conversation a meaningful name; your title wins over provider auto-titles and survives rescans
 - **Fault-tolerant refresh** — one unreadable Hermes profile cannot prevent other profiles and providers from being discovered
 - **Resume fidelity** — preserve native session IDs through Hermes compression and immediate same-process reopen, so continuing a conversation does not accidentally create a fresh session
 
@@ -115,7 +119,7 @@ A shared layer your agents can read, write, and act on through MCP.
 - **Two-way Git integration** — pull open issues from **GitHub** and **GitLab** into a board, push finished cards back as pull requests. Connect a host with a personal access token (board settings → **Git account**) and no `gh` / `glab` CLI is needed
 - **Project linking** — point a workspace at a git repo and ZeroAny Workbench auto-spawns one board per subproject.
 - **Notion-style notes** — a real WYSIWYG markdown editor, not a textarea. Per-project, linked to sessions, exposed through MCP.
-- **AI coworkers** — named personas (Tech Lead, Brainstormer, Developer, Reviewer, QA) with their own prompts and providers. They read cards, comment, request changes, claim work, commit, and raise PRs.
+- **AI coworkers** — named personas (Tech Lead, Brainstormer, Developer, Reviewer, QA) with their own prompts and providers. They read cards, comment, request changes, claim work, commit, and raise PRs. Providers include Claude, Codex, Antigravity, OpenCode, and **Hermes** — a Hermes coworker can be pinned to a named Hermes profile at creation time, so every card chat runs under that profile's model, config, and credentials.
 - **Single-owner lock** — only one coworker (or one terminal session) owns a card at any moment. Switching owners, claiming from a terminal, and chatting in the card drawer all go through the same lock — no race conditions, no lost work.
 - **Pinned Inbox** — mentions, review requests, and approval queues across every board, in one pane.
 - **Cross-board search** — instant full-text search across every note and card.
