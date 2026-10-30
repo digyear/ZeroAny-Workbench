@@ -94,6 +94,7 @@ ZeroAny Workbench does not limit you to sessions created inside the app. The glo
 - **Fork nesting** — Hermes `/branch` children render indented under the session they forked from, in the Session Center and the sidebar alike; lineage is remapped through compression tips, so nesting survives long conversations
 - **Local rename** — give any discovered conversation a meaningful name; your title wins over provider auto-titles and survives rescans
 - **Fault-tolerant refresh** — one unreadable Hermes profile cannot prevent other profiles and providers from being discovered
+- **Cron noise excluded** — Hermes scheduler runs (`source = 'cron'`, one row per tick) never enter discovery or resume rehydration, and stale catalog rows from earlier scans are pruned on refresh
 - **Resume fidelity** — preserve native session IDs through Hermes compression and immediate same-process reopen, so continuing a conversation does not accidentally create a fresh session
 
 #### Purposes

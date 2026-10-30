@@ -849,17 +849,55 @@ async fn upsert_discovered_sessions_into_catalog(
     })
 }
 
+/// Delete catalog rows an earlier build ingested from Hermes' scheduler-owned
+/// `cron` sessions.
+///
+/// Discovery no longer reports those rows, but the catalog is a cache and
+/// nothing else prunes stale entries — without this a profile that ran a
+/// recurring job keeps listing one row per tick forever. Adopted rows survive:
+/// they carry the resume identity of a live Workbench session.
+async fn purge_cron_hermes_catalog_rows(pool: &SqlitePool) -> Result<u64, String> {
+    let result = sqlx::query(
+        "DELETE FROM agent_discovered_sessions
+         WHERE provider = 'hermes'
+           AND adopted_agent_session_id IS NULL
+           AND COALESCE(session_kind, '') = 'cron'",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("Failed to prune cron sessions from the catalog: {}", e))?;
+    Ok(result.rows_affected())
+}
+
 pub async fn scan_discovered_sessions_into_catalog(
     pool: &SqlitePool,
     provider: Option<&str>,
 ) -> Result<DiscoveredSessionScanSummary, String> {
+    let includes_hermes = provider
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.eq_ignore_ascii_case("hermes"))
+        .unwrap_or(true);
     let provider_owned = provider.map(str::to_string);
     let (discovered, errors) = tauri::async_runtime::spawn_blocking(move || {
         discover_sessions_global(provider_owned.as_deref())
     })
     .await
     .map_err(|e| format!("discovery thread: {}", e))??;
-    upsert_discovered_sessions_into_catalog(pool, discovered, errors).await
+    let summary = upsert_discovered_sessions_into_catalog(pool, discovered, errors).await?;
+    if includes_hermes {
+        match purge_cron_hermes_catalog_rows(pool).await {
+            Ok(0) => {}
+            Ok(removed) => log::info!(
+                target: "agent::discovery",
+                "Removed {} cron-run row(s) from the discovered-session catalog",
+                removed
+            ),
+            // Cleanup is best-effort: a failed prune must not fail the scan.
+            Err(error) => log::warn!(target: "agent::discovery", "{}", error),
+        }
+    }
+    Ok(summary)
 }
 
 #[tauri::command]
@@ -1827,6 +1865,10 @@ async fn query_hermes_sessions(
             FROM sessions s
             WHERE s.cwd = ?
               AND s.archived = 0
+              -- Scheduler-owned runs (source = 'cron') are not conversations a
+              -- human resumes, and one recurring job alone leaves hundreds of
+              -- rows. Drop them before LIMIT so the budget goes to real work.
+              AND COALESCE(s.source, '') NOT IN ('cron')
               AND json_extract(COALESCE(s.model_config, '{}'), '$._delegate_from') IS NULL
               AND (
                     s.parent_session_id IS NULL
@@ -1892,6 +1934,10 @@ async fn query_hermes_sessions(
             FROM sessions s
             WHERE s.archived = 0
               AND COALESCE(s.cwd, '') != ''
+              -- Scheduler-owned runs (source = 'cron') are not conversations a
+              -- human resumes, and one recurring job alone leaves hundreds of
+              -- rows. Drop them before LIMIT so the budget goes to real work.
+              AND COALESCE(s.source, '') NOT IN ('cron')
               AND json_extract(COALESCE(s.model_config, '{}'), '$._delegate_from') IS NULL
               AND (
                     s.parent_session_id IS NULL
@@ -4258,6 +4304,10 @@ mod discovery_tests {
             "INSERT INTO sessions VALUES ('delegate','cli','{\"_delegate_from\":\"root\"}','root',350,NULL,NULL,'Worker','/repo',0)",
             "INSERT INTO sessions VALUES ('branch','cli','{\"_branched_from\":\"root\"}','root',250,NULL,NULL,'Branch','/repo',0)",
             "INSERT INTO sessions VALUES ('archived','cli','{}',NULL,400,NULL,NULL,'Archived','/repo',1)",
+            // Scheduler-owned runs: newest by started_at, but never a
+            // conversation this picker offers to resume.
+            "INSERT INTO sessions VALUES ('cron-newest','cron','{}',NULL,500,501,'cron_complete','Daily brief','/repo',0)",
+            "INSERT INTO sessions VALUES ('cron-running','cron','{}',NULL,499,NULL,NULL,'Daily brief','/repo',0)",
             "INSERT INTO sessions VALUES ('regular','cli','{}',NULL,300,NULL,NULL,'Regular','/repo',0)",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
@@ -4271,6 +4321,7 @@ mod discovery_tests {
             .iter()
             .map(|r| r.external_session_id.as_str())
             .collect();
+        // Cron runs are excluded even though they are the newest rows.
         assert_eq!(ids, vec!["regular", "branch", "tip"]);
         assert_eq!(rows[2].preview.as_deref(), Some("Live"));
         assert_eq!(rows[2].project_path.as_deref(), Some("/repo"));
@@ -4287,7 +4338,61 @@ mod discovery_tests {
             .find(|row| row.external_session_id == "tip")
             .unwrap();
         assert_eq!(global_tip.project_path.as_deref(), Some("/repo"));
+        assert!(
+            global_rows
+                .iter()
+                .all(|row| !row.external_session_id.starts_with("cron-")),
+            "provider-wide discovery must skip cron runs too: {global_rows:?}"
+        );
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn catalog_prune_drops_unadopted_hermes_cron_rows_only() {
+        let pool = adoption_test_pool().await;
+        for (id, provider, kind, adopted) in [
+            ("hermes:default:cron-row", "hermes", "cron", None),
+            ("hermes:default:cron-adopted", "hermes", "cron", Some("agent-live")),
+            ("hermes:default:cli-row", "hermes", "cli", None),
+            ("codex:codex-cron-row", "codex", "cron", None),
+        ] {
+            sqlx::query(
+                "INSERT INTO agent_discovered_sessions (
+                    id, provider, profile, external_session_id, project_path, project_name,
+                    title, created_at, updated_at, last_seen_at, session_kind,
+                    adopted_agent_session_id
+                 ) VALUES (?, ?, ?, ?, '/repo', 'repo', 'Row',
+                    '2026-07-24T00:00:00Z', '2026-07-24T00:00:00Z', '2026-07-24T00:00:00Z', ?, ?)",
+            )
+            .bind(id)
+            .bind(provider)
+            .bind(if provider == "hermes" { "default" } else { "" })
+            .bind(id)
+            .bind(kind)
+            .bind(adopted)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(purge_cron_hermes_catalog_rows(&pool).await.unwrap(), 1);
+
+        let remaining: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM agent_discovered_sessions ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        // A row already adopted into a Workbench session keeps its resume
+        // identity; non-Hermes providers are never touched by this prune.
+        assert_eq!(
+            remaining,
+            vec![
+                "codex:codex-cron-row".to_string(),
+                "hermes:default:cli-row".to_string(),
+                "hermes:default:cron-adopted".to_string(),
+            ]
+        );
     }
 
     #[test]
