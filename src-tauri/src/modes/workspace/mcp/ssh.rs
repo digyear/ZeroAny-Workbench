@@ -117,7 +117,7 @@ pub(super) async fn exec(pool: &SqlitePool, args: &Value) -> Result<Value, (i32,
 
     match tokio::time::timeout(
         Duration::from_secs(timeout_secs),
-        run_command(pool, &profile_id, &command),
+        run_command(pool, &profile_id, &command, Duration::from_secs(timeout_secs)),
     )
     .await
     {
@@ -137,11 +137,26 @@ pub(super) async fn exec(pool: &SqlitePool, args: &Value) -> Result<Value, (i32,
     }
 }
 
-/// Dial, exec, drop the connection.
-async fn run_command(pool: &SqlitePool, profile_id: &str, command: &str) -> Result<Value, String> {
-    let handle = // `false`: an MCP call has no human to answer an OTP prompt, so the
+/// Run `command` for MCP: on the connection the user already authenticated
+/// when one is live (a host that wants a one-time code is only reachable
+/// that way), otherwise dial a fresh one, exec, and drop it.
+async fn run_command(
+    pool: &SqlitePool,
+    profile_id: &str,
+    command: &str,
+    budget: Duration,
+) -> Result<Value, String> {
+    if let Some(result) = crate::modes::ssh::live::run(profile_id, command, budget).await {
+        return result.map(|mut value| {
+            value["profileId"] = json!(profile_id);
+            value["via"] = json!("live-session");
+            value
+        });
+    }
+
+    // `false`: an MCP call has no human to answer an OTP prompt, so the
     // connect fails fast with the prompt names instead of stalling.
-    open_authenticated_ssh_session(pool, profile_id, false).await?;
+    let handle = open_authenticated_ssh_session(pool, profile_id, false).await?;
     let result = exec_on_handle(&handle, command).await;
     // Best effort: the server closes on its own if this fails.
     let _ = handle
@@ -149,6 +164,7 @@ async fn run_command(pool: &SqlitePool, profile_id: &str, command: &str) -> Resu
         .await;
     result.map(|mut value| {
         value["profileId"] = json!(profile_id);
+        value["via"] = json!("new-connection");
         value
     })
 }

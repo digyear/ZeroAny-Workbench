@@ -1258,6 +1258,63 @@ mod mfa_ladder_tests {
         );
     }
 
+    /// Once a terminal session is up, its connection is parked in the live
+    /// registry: MCP commands then run as extra channels on it, with no
+    /// second authentication (the only way in on an OTP-only host).
+    #[tokio::test]
+    #[ignore = "spawns python3 + paramiko to emulate a password+OTP bastion"]
+    async fn live_session_serves_commands_without_reauthenticating() {
+        let _serial = SERIAL.lock().await;
+        init_logger();
+        let Some(fixture) = start_fixture() else {
+            panic!("fixture unavailable — needs python3 with paramiko");
+        };
+        set_scripted_prompt_answers(vec![vec!["123456".to_string()]]);
+
+        let spec = SshAuthSpec {
+            host: "127.0.0.1".to_string(),
+            port: fixture.port,
+            username: "test".to_string(),
+            auth_type: "password".to_string(),
+            key_path: None,
+            secret: Some("pw1".to_string()),
+            interactive: true,
+        };
+        let handle = open_authenticated_ssh_session_with_spec(spec)
+            .await
+            .expect("auth must succeed");
+        let profile_id = "live-test-profile";
+        let guard = super::super::live::attach(profile_id, handle);
+        assert!(super::super::live::has(profile_id));
+
+        let result = super::super::live::run(
+            profile_id,
+            "uname -a",
+            std::time::Duration::from_secs(15),
+        )
+        .await
+        .expect("a live session must be found")
+        .expect("exec on the live session must succeed");
+        assert_eq!(result["exitCode"], 0);
+        assert!(
+            result["stdout"]
+                .as_str()
+                .unwrap_or("")
+                .contains("EXEC OK: uname -a"),
+            "unexpected stdout: {}",
+            result["stdout"]
+        );
+
+        drop(guard);
+        assert!(!super::super::live::has(profile_id), "guard must unregister");
+        assert!(
+            super::super::live::run(profile_id, "uname -a", std::time::Duration::from_secs(2))
+                .await
+                .is_none(),
+            "after the session ends there is nothing to reuse"
+        );
+    }
+
     /// The MCP `ssh_exec` path: exec a command on an authenticated session
     /// and collect stdout / exit code. The fixture answers every exec with
     /// `EXEC OK: <command>` and status 0.

@@ -10,6 +10,7 @@
 pub mod agent;
 pub mod ai_tools;
 pub mod config_import;
+pub mod live;
 pub mod models;
 pub mod policy;
 pub mod profiles;

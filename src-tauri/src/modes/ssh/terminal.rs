@@ -175,6 +175,12 @@ async fn run_ssh_session(
         .await
         .map_err(|e| format!("request shell: {}", e))?;
 
+    // Hand the authenticated connection to the live-session registry so MCP
+    // calls (and anything else headless) can reuse it instead of doing their
+    // own auth — the only way in on a host that wants a one-time code. The
+    // guard drops at the end of this session, closing the connection with it.
+    let _live = crate::modes::ssh::live::attach(profile_id, handle);
+
     // Single-task select loop: forward inbound channel msgs to the frontend
     // and outbound commands to the channel. Exiting either branch tears the
     // session down.
