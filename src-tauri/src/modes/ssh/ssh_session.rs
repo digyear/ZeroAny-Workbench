@@ -227,20 +227,101 @@ pub async fn open_authenticated_ssh_session(
 pub async fn open_authenticated_ssh_session_with_spec(
     spec: SshAuthSpec,
 ) -> Result<Handle<ClientHandler>, String> {
-    // TCP socket. Manual creation so we can disable Nagle's algorithm —
-    // critical for interactive SSH (40-200ms keystroke latency without it).
+    let tcp = open_tcp(&spec).await?;
+    match perform_ssh_handshake_and_auth(Box::new(tcp), &spec).await {
+        // The primary method (key/agent) failed but the host may want a
+        // one-time code. russh cannot run that exchange on a used handle, so
+        // connect again and authenticate with keyboard-interactive only.
+        Err(e) if e == NEED_KBI_RETRY => {
+            log::info!("[ssh] key/agent auth failed; retrying with keyboard-interactive");
+            let tcp = open_tcp(&spec).await?;
+            perform_ssh_kbi_auth(Box::new(tcp), &spec).await
+        }
+        other => other,
+    }
+}
+
+/// Fresh TCP socket with Nagle disabled — critical for interactive SSH
+/// (40-200 ms keystroke latency without it).
+async fn open_tcp(spec: &SshAuthSpec) -> Result<tokio::net::TcpStream, String> {
     let tcp = tokio::net::TcpStream::connect((spec.host.as_str(), spec.port))
         .await
         .map_err(|e| format!("tcp connect: {}", e))?;
     if let Err(e) = tcp.set_nodelay(true) {
         log::warn!("[ssh] warning: TCP_NODELAY not set ({})", e);
     }
-    perform_ssh_handshake_and_auth(Box::new(tcp), &spec).await
+    Ok(tcp)
 }
+
+/// Sentinel returned when the primary auth method failed but the host may
+/// still want a one-time code. The caller reconnects and drives
+/// keyboard-interactive on the fresh connection.
+///
+/// Why a reconnect: russh 0.45 only arms `CurrentRequest::KeyboardInteractive`
+/// during the service-accept handshake (`client/encrypted.rs`, the
+/// `WaitingAuthServiceRequest` branch). A later
+/// `authenticate_keyboard_interactive_start` on a handle that already carried
+/// a failed method goes through `write_auth_request_if_needed`, which writes
+/// the request *without* updating `auth_request.current` — so the server's
+/// INFO_REQUEST is dropped, `Reply::AuthInfoRequest` is never sent, and the
+/// auth future hangs until the outer timeout.
+const NEED_KBI_RETRY: &str = "__zeroany_need_kbi_retry__";
 
 /// Run the SSH handshake and authentication on the given transport
 /// stream. Shared by the direct, ProxyCommand, and ProxyJump paths so
 /// auth code stays in one place.
+fn ssh_client_config() -> Arc<client::Config> {
+    Arc::new(client::Config {
+        keepalive_interval: Some(std::time::Duration::from_secs(30)),
+        keepalive_max: 3,
+        ..client::Config::default()
+    })
+}
+
+/// SSH handshake over an already-established transport, with the connect
+/// timeout (15 s) applied. Shared by the primary and second-factor paths.
+async fn ssh_connect_stream(
+    transport: BoxedTransport,
+) -> Result<Handle<ClientHandler>, String> {
+    let connect_fut = client::connect_stream(ssh_client_config(), transport, ClientHandler);
+    match tokio::time::timeout(std::time::Duration::from_secs(15), connect_fut).await {
+        Ok(Ok(h)) => Ok(h),
+        Ok(Err(e)) => Err(format!("ssh connect: {}", e)),
+        Err(_) => {
+            crate::telemetry::bump("err.ssh_timeout");
+            Err("ssh connect: timed out after 15s".to_string())
+        }
+    }
+}
+
+/// Second-factor pass on a FRESH connection: nothing but
+/// keyboard-interactive, so the OTP round is armed correctly (see
+/// `NEED_KBI_RETRY`).
+async fn perform_ssh_kbi_auth(
+    transport: BoxedTransport,
+    spec: &SshAuthSpec,
+) -> Result<Handle<ClientHandler>, String> {
+    let mut handle = ssh_connect_stream(transport).await?;
+    let authed = match tokio::time::timeout(
+        std::time::Duration::from_secs(150),
+        try_keyboard_interactive_with_ui(&mut handle, &spec.username, spec.secret.as_deref()),
+    )
+    .await
+    {
+        Ok(Ok(ok)) => ok,
+        Ok(Err(e)) => return Err(e),
+        Err(_) => {
+            crate::telemetry::bump("err.ssh_timeout");
+            return Err("ssh auth (one-time code): timed out after 150s".to_string());
+        }
+    };
+    if !authed {
+        return Err("authentication failed".to_string());
+    }
+    crate::telemetry::bump("ssh.connect");
+    Ok(handle)
+}
+
 async fn perform_ssh_handshake_and_auth(
     transport: BoxedTransport,
     spec: &SshAuthSpec,
@@ -257,25 +338,7 @@ async fn perform_ssh_handshake_and_auth(
     // after 3 missed replies — dead hosts surface within ~90s as an
     // ordinary exit, which markExited() on the frontend converts to a
     // 'disconnected' state (no more stale green pulse).
-    let config = Arc::new(client::Config {
-        keepalive_interval: Some(std::time::Duration::from_secs(30)),
-        keepalive_max: 3,
-        ..client::Config::default()
-    });
-    let connect_fut = client::connect_stream(config, transport, ClientHandler);
-    let mut handle: Handle<ClientHandler> = match tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        connect_fut,
-    )
-    .await
-    {
-        Ok(Ok(h)) => h,
-        Ok(Err(e)) => return Err(format!("ssh connect: {}", e)),
-        Err(_) => {
-            crate::telemetry::bump("err.ssh_timeout");
-            return Err("ssh connect: timed out after 15s".to_string());
-        }
-    };
+    let mut handle = ssh_connect_stream(transport).await?;
 
     // Auth phase has its own timeout — separate from the handshake timeout
     // above. If the server closes the connection mid-negotiation (some
@@ -283,8 +346,13 @@ async fn perform_ssh_handshake_and_auth(
     // russh's underlying recv can wait forever. 30s covers slow PAM stacks
     // (e.g. LDAP-backed auth doing a network round-trip) without burning
     // the user's afternoon on a stuck UI.
+    // Auth can require human input (keyboard-interactive: password + OTP).
+    // The per-prompt wait is 120 s, so a 30 s outer budget guaranteed a
+    // timeout before anyone could type a code. Keep enough headroom for one
+    // prompt round plus the handshake; a dead server still fails fast on its
+    // own (connection attempts have their own 15 s budget).
     let authed = match tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(150),
         run_auth(&mut handle, spec),
     )
     .await
@@ -293,10 +361,16 @@ async fn perform_ssh_handshake_and_auth(
         Ok(Err(e)) => return Err(e),
         Err(_) => {
             crate::telemetry::bump("err.ssh_timeout");
-            return Err("ssh auth: timed out after 30s".to_string());
+            return Err("ssh auth: timed out after 150s".to_string());
         }
     };
     if !authed {
+        // A key/agent step proves the first factor but cannot carry a one-time
+        // code; ask the caller to retry through keyboard-interactive on a new
+        // connection. Password profiles already tried KBI inside `run_auth`.
+        if matches!(spec.auth_type.as_str(), "key" | "agent") {
+            return Err(NEED_KBI_RETRY.to_string());
+        }
         return Err("authentication failed".to_string());
     }
 
@@ -334,54 +408,76 @@ async fn run_auth(
             }
         }
         "password" => {
-            // Three cases:
-            //   1. Stored password present → try plain `password` method
-            //      first (fast path for traditional sshd), fall back to
-            //      keyboard-interactive on rejection (the stored password
-            //      pre-fills the first prompt).
-            //   2. Stored password present + traditional server → done in
-            //      step 1, no modal.
-            //   3. No stored password → skip the plain-password attempt
-            //      entirely (it can't possibly succeed) and go straight
-            //      to keyboard-interactive. The modal asks the user for
-            //      the password as the first prompt — same UX as ssh,
-            //      VS Code, Zed, etc.
-            match spec.secret.clone() {
-                Some(password) => {
-                    match handle
-                        .authenticate_password(&spec.username, password.clone())
-                        .await
-                    {
-                        Ok(true) => true,
-                        // Rejected, or the server refuses the `password` method
-                        // outright (PAM-only hosts answer with
-                        // keyboard-interactive): drive the prompts so the user
-                        // can enter password and OTP.
-                        Ok(false) => {
-                            try_keyboard_interactive_with_ui(
-                                handle,
-                                &spec.username,
-                                Some(&password),
-                            )
-                            .await?
-                        }
-                        Err(error) => {
-                            log::debug!(
-                                target: "ssh::auth",
-                                "password method rejected ({}), trying keyboard-interactive",
-                                error
-                            );
-                            try_keyboard_interactive_fallback(
-                                handle,
-                                &spec.username,
-                                Some(&password),
-                            )
+            // Three-step ladder, in this order on purpose:
+            //
+            // 1. keyboard-interactive straight away. Ordinary MFA hosts ask
+            //    "Password:" then the OTP inside one KBI exchange; the stored
+            //    secret pre-fills the password round so nothing pops up.
+            // 2. the plain `password` method. Some sshd/PAM stacks (the
+            //    bastions this was written for) reject a KBI *first* attempt
+            //    with "remaining: password,publickey", accept the password as
+            //    factor #1 and only then advertise keyboard-interactive as
+            //    factor #2.
+            // 3. keyboard-interactive again for the OTP. This second attempt
+            //    does work even though russh 0.45 does not re-arm
+            //    `CurrentRequest::KeyboardInteractive` for it: the first
+            //    (rejected) attempt armed it during the service-accept
+            //    handshake, and a USERAUTH_FAILURE does not clear it.
+            let first = try_keyboard_interactive_with_ui(
+                handle,
+                &spec.username,
+                spec.secret.as_deref(),
+            )
+            .await;
+            match first {
+                Ok(true) => true,
+                other => {
+                    if let Err(error) = &other {
+                        log::debug!(
+                            target: "ssh::auth",
+                            "keyboard-interactive (first try) unavailable: {}",
+                            error
+                        );
+                    }
+                    let password_ok = match spec.secret.clone() {
+                        Some(password) => match handle
+                            .authenticate_password(&spec.username, password)
                             .await
+                        {
+                            Ok(ok) => ok,
+                            Err(error) => {
+                                log::debug!(
+                                    target: "ssh::auth",
+                                    "password method failed: {}",
+                                    error
+                                );
+                                false
+                            }
+                        },
+                        None => false,
+                    };
+                    if password_ok {
+                        true
+                    } else {
+                        // The host may now be demanding the second factor.
+                        match try_keyboard_interactive_with_ui(
+                            handle,
+                            &spec.username,
+                            spec.secret.as_deref(),
+                        )
+                        .await
+                        {
+                            Ok(ok) => ok,
+                            Err(error) => {
+                                log::debug!(
+                                    target: "ssh::auth",
+                                    "keyboard-interactive (second factor) unavailable: {}",
+                                    error
+                                );
+                                false
+                            }
                         }
                     }
-                }
-                None => {
-                    try_keyboard_interactive_with_ui(handle, &spec.username, None).await?
                 }
             }
         }
@@ -472,11 +568,23 @@ async fn try_keyboard_interactive_with_ui(
 ) -> Result<bool, String> {
     use russh::client::KeyboardInteractiveAuthResponse;
 
-    let app = app_handle().ok_or_else(|| {
-        "keyboard-interactive auth: AppHandle not available (Tauri startup incomplete)"
-            .to_string()
-    })?;
-    let pending: tauri::State<'_, PendingAuthPrompts> = app.state();
+    // Scripted mode (tests / fixture harness) drives the rounds without a UI,
+    // so it must not require a live Tauri AppHandle.
+    #[cfg(debug_assertions)]
+    let scripted = scripted_prompts_armed();
+    #[cfg(not(debug_assertions))]
+    let scripted = false;
+
+    let ui: Option<(&AppHandle, tauri::State<'_, PendingAuthPrompts>)> = if scripted {
+        None
+    } else {
+        let app = app_handle().ok_or_else(|| {
+            "keyboard-interactive auth: AppHandle not available (Tauri startup incomplete)"
+                .to_string()
+        })?;
+        let pending: tauri::State<'_, PendingAuthPrompts> = app.state();
+        Some((app, pending))
+    };
 
     let mut response = handle
         .authenticate_keyboard_interactive_start(username.to_string(), None)
@@ -495,6 +603,13 @@ async fn try_keyboard_interactive_with_ui(
                 instructions,
                 prompts,
             } => {
+                log::debug!(
+                    target: "ssh::auth",
+                    "keyboard-interactive round {} user={} prompts={:?}",
+                    round_index,
+                    username,
+                    prompts.iter().map(|p| (p.prompt.trim(), p.echo)).collect::<Vec<_>>()
+                );
                 // First-round single-password-prompt heuristic: pre-fill from
                 // stored secret without showing the modal. Detection: prompt
                 // is non-echoing AND prompt text mentions "password" (case-
@@ -515,8 +630,30 @@ async fn try_keyboard_interactive_with_ui(
                 } else if is_first_password_round && pre_stored_secret.is_some() {
                     vec![pre_stored_secret.unwrap().to_string()]
                 } else {
-                    request_prompts_from_user(app, &pending, &name, &instructions, &prompts)
-                        .await?
+                    match &ui {
+                        Some((app, pending)) => {
+                            request_prompts_from_user(
+                                app,
+                                pending,
+                                &name,
+                                &instructions,
+                                &prompts,
+                            )
+                            .await?
+                        }
+                        None => {
+                            #[cfg(debug_assertions)]
+                            {
+                                take_scripted_answers(&name, &prompts)?
+                            }
+                            #[cfg(not(debug_assertions))]
+                            {
+                                return Err(
+                                    "keyboard-interactive auth: no prompt source".to_string()
+                                );
+                            }
+                        }
+                    }
                 };
 
                 response = handle
@@ -530,6 +667,57 @@ async fn try_keyboard_interactive_with_ui(
         }
     }
     Ok(false)
+}
+
+/// Debug-build hook: answer keyboard-interactive rounds from a script instead
+/// of the UI. Used by the MFA regression test, which drives the real auth
+/// ladder against `tests/fixtures/mfa_ssh_server.py`; never compiled into a
+/// release build.
+#[cfg(debug_assertions)]
+static SCRIPTED_PROMPT_ANSWERS: std::sync::Mutex<Vec<Vec<String>>> =
+    std::sync::Mutex::new(Vec::new());
+#[cfg(debug_assertions)]
+static SCRIPTED_PROMPTS_ARMED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Arm scripted answers for the next keyboard-interactive rounds (tests only).
+#[cfg(debug_assertions)]
+pub(crate) fn set_scripted_prompt_answers(rounds: Vec<Vec<String>>) {
+    if let Ok(mut guard) = SCRIPTED_PROMPT_ANSWERS.lock() {
+        *guard = rounds;
+    }
+    SCRIPTED_PROMPTS_ARMED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(debug_assertions)]
+fn scripted_prompts_armed() -> bool {
+    SCRIPTED_PROMPTS_ARMED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Take the answers for one InfoRequest round from the script.
+#[cfg(debug_assertions)]
+fn take_scripted_answers(
+    name: &str,
+    prompts: &[russh::client::Prompt],
+) -> Result<Vec<String>, String> {
+    let answers = SCRIPTED_PROMPT_ANSWERS
+        .lock()
+        .ok()
+        .and_then(|mut queue| {
+            if queue.is_empty() {
+                None
+            } else {
+                Some(queue.remove(0))
+            }
+        })
+        .ok_or_else(|| format!("scripted prompts exhausted at round {:?}", name))?;
+    log::info!(
+        target: "ssh::auth",
+        "scripted answers: {:?} for {:?}",
+        answers,
+        prompts.iter().map(|p| p.prompt.trim()).collect::<Vec<_>>()
+    );
+    Ok(answers)
 }
 
 /// Emit a `ssh:auth-prompts` event with a fresh request_id and park on a
@@ -562,6 +750,12 @@ async fn request_prompts_from_user(
             .collect(),
     };
 
+    log::info!(
+        target: "ssh::auth",
+        "emit ssh:auth-prompts request={} prompts={:?}",
+        request_id,
+        payload.prompts.iter().map(|p| p.prompt.trim()).collect::<Vec<_>>()
+    );
     app.emit("ssh:auth-prompts", &payload)
         .map_err(|e| format!("ssh auth: emit prompts event: {}", e))?;
 
@@ -576,6 +770,11 @@ async fn request_prompts_from_user(
         }
         Err(_) => {
             pending.inner.lock().remove(&request_id);
+            log::warn!(
+                target: "ssh::auth",
+                "auth prompts request={} never answered (120s) — modal never submitted",
+                request_id
+            );
             return Err("auth prompt timed out — no response within 2 minutes".to_string());
         }
     };
@@ -597,10 +796,24 @@ pub async fn ssh_submit_auth_prompts(
         map.remove(&request_id)
     };
     match sender {
-        Some(tx) => tx
-            .send(answers)
-            .map_err(|_| "auth flow no longer waiting (timed out or cancelled)".to_string()),
-        None => Err(format!("no pending auth prompt with id {}", request_id)),
+        Some(tx) => {
+            log::info!(
+                target: "ssh::auth",
+                "auth prompts answered request={} answers={}",
+                request_id,
+                answers.len()
+            );
+            tx.send(answers)
+                .map_err(|_| "auth flow no longer waiting (timed out or cancelled)".to_string())
+        }
+        None => {
+            log::warn!(
+                target: "ssh::auth",
+                "auth prompts submit for unknown/expired request={}",
+                request_id
+            );
+            Err(format!("no pending auth prompt with id {}", request_id))
+        }
     }
 }
 
@@ -837,4 +1050,102 @@ async fn pump_channel_into_duplex(
     }
     let _ = channel.close().await;
     // _jump_handle_keepalive drops here, closing the upstream SSH session.
+}
+
+#[cfg(test)]
+mod mfa_ladder_tests {
+    use super::*;
+    use std::process::{Child, Command, Stdio};
+
+    const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mfa_ssh_server.py");
+
+    struct Fixture {
+        child: Child,
+        port: u16,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .map(|addr| addr.port())
+            .unwrap_or(2222)
+    }
+
+    fn start_fixture() -> Option<Fixture> {
+        let port = free_port();
+        let child = Command::new("python3")
+            .arg(FIXTURE)
+            .arg(port.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(
+                std::fs::File::create("/tmp/mfa_fixture_stderr.log").unwrap(),
+            ))
+            .spawn()
+            .ok()?;
+        let fixture = Fixture { child, port };
+        for _ in 0..100 {
+            if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                return Some(fixture);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        None
+    }
+
+    /// Minimal stderr logger so `--nocapture` shows the auth ladder.
+    struct StderrLogger;
+    impl log::Log for StderrLogger {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() <= log::Level::Debug
+        }
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                eprintln!("[{}] {}", record.level(), record.args());
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    fn init_logger() {
+        static LOGGER: StderrLogger = StderrLogger;
+        let _ = log::set_logger(&LOGGER);
+        log::set_max_level(log::LevelFilter::Debug);
+    }
+
+    /// Regression for the password + OTP bastion: it rejects a
+    /// keyboard-interactive first attempt, accepts the password as factor #1
+    /// and only then advertises keyboard-interactive for the code. The ladder
+    /// must come back around to a working KBI exchange and consume the OTP.
+    #[tokio::test]
+    #[ignore = "spawns python3 + paramiko to emulate a password+OTP bastion"]
+    async fn password_plus_otp_ladder_reaches_the_code_round() {
+        init_logger();
+        let Some(fixture) = start_fixture() else {
+            panic!("fixture unavailable — needs python3 with paramiko");
+        };
+        // Round 0 ("Password: ") is answered from the stored secret, so the
+        // script only has to carry the code round.
+        set_scripted_prompt_answers(vec![vec!["123456".to_string()]]);
+
+        let spec = SshAuthSpec {
+            host: "127.0.0.1".to_string(),
+            port: fixture.port,
+            username: "test".to_string(),
+            auth_type: "password".to_string(),
+            key_path: None,
+            secret: Some("pw1".to_string()),
+        };
+
+        let handle = open_authenticated_ssh_session_with_spec(spec)
+            .await
+            .expect("auth must succeed once the OTP is supplied");
+        drop(handle);
+    }
 }
