@@ -5,6 +5,7 @@
     import { cloudPlan, cloudSub, upgradeModalOpen } from "$lib/stores/cloud";
     import AccountTabContent from "$lib/components/settings/AccountTabContent.svelte";
     import MobileTabContent from "$lib/components/settings/MobileTabContent.svelte";
+    import McpAccessSection from "$lib/components/settings/McpAccessSection.svelte";
     import { getVersion } from "@tauri-apps/api/app";
     import {
         tabs as sharedTabs,
@@ -122,6 +123,7 @@
         | "shortcuts"
         | "ai"
         | "mobile"
+        | "mcp"
         | "rest"
         | "agent"
         | "canvas"
@@ -405,7 +407,7 @@
      *  token-init branch only matters for legacy installs that
      *  somehow wound up without one. */
     $effect(() => {
-        if (activeTab === "workspace" && show) {
+        if (activeTab === "mcp" && show) {
             refreshMcpStatus();
             if (!mcpToken) {
                 workspaceMcpNewToken(mcpPort).catch(() => {});
@@ -965,6 +967,13 @@
             key: "mobile",
             label: "Mobile",
             icon: '<rect x="7" y="2" width="10" height="20" rx="2.5"/><line x1="11" y1="18" x2="13" y2="18"/>',
+        },
+        {
+            kind: "tab",
+            key: "mcp",
+            label: "MCP",
+            // Plug — same glyph as the Exposed-connections card.
+            icon: '<path d="M9 2v6M15 2v6"/><path d="M6 8h12v5a6 6 0 0 1-12 0V8z"/><path d="M12 19v3"/>',
         },
         { kind: "header", label: "Modes" },
         // Order + glyphs MUST match the main Sidebar (Agent, REST, ...).
@@ -2065,7 +2074,7 @@
                             </div>
                         </section>
                     </div>
-                {:else if activeTab === "workspace"}
+                {:else if activeTab === "mcp"}
                     <div class="stg-card-stack">
                         <section class="stg-card">
                             <header class="stg-card-hd">
@@ -2090,10 +2099,11 @@
                                     <h3 class="stg-card-title">MCP Server</h3>
                                     <p class="stg-card-sub">
                                         Local MCP server that lets MCP-aware
-                                        coding agents read and edit your Notes
-                                        and Boards via tool calls. Each
-                                        installed agent's config is registered
-                                        automatically when enabled.
+                                        agents (Claude Code, Codex, Cursor, …)
+                                        read and edit your Notes and Boards, and
+                                        reach the connections you expose below.
+                                        Each installed agent's config is
+                                        registered automatically when enabled.
                                     </p>
                                 </div>
                                 <span
@@ -2183,6 +2193,11 @@
                             </div>
                         </section>
 
+                        <McpAccessSection />
+                    </div>
+
+                {:else if activeTab === "workspace"}
+                    <div class="stg-card-stack">
                         <section class="stg-card">
                             <header class="stg-card-hd">
                                 <span class="stg-card-icon" aria-hidden="true">

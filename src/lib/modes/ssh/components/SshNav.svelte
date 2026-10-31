@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { get } from 'svelte/store';
   import { sshProfiles, activeSshProfile, loadSshProfiles, sshTerminalIds, sshConnStates } from '../stores';
-  import { sshTouchProfile, sshDeleteProfile, sshKillTerminal, sshReadConfigHosts, mcpGrantsList } from '../commands';
+  import { sshTouchProfile, sshDeleteProfile, sshKillTerminal, sshReadConfigHosts } from '../commands';
   import { profileIdFromTabKey } from '../tabkey';
   import { tabs as tabsStore, closeTab } from '$lib/shared/stores/tabs';
   import { showContextMenu } from '$lib/shared/primitives/contextmenu';
@@ -10,7 +10,6 @@
   import { errorToast, friendlyError } from '$lib/utils/errors';
   import NewSshProfileModal from './NewSshProfileModal.svelte';
   import EditSshProfileModal from './EditSshProfileModal.svelte';
-  import SshMcpAccessModal from './SshMcpAccessModal.svelte';
   import ConfirmDialog from '$lib/shared/primitives/ConfirmDialog.svelte';
   import type { SshProfile } from '../types';
   import { SSH_EVENT } from '$lib/shared/constants/events';
@@ -30,11 +29,6 @@
   let showAdd = $state(false);
   let showEdit = $state(false);
   let editTarget = $state<SshProfile | null>(null);
-  // MCP exposure per profile id: an agent can only reach hosts the user
-  // turned on here. Loaded on mount and after the access modal saves.
-  let mcpGrants = $state<Record<string, { enabled: boolean; scope: string }>>({});
-  let showMcp = $state(false);
-  let mcpTarget = $state<SshProfile | null>(null);
   // Which tab to open the unified add/import modal on. Set to 'import'
   // by the empty-state callout, otherwise 'manual'.
   let addInitialView = $state<'manual' | 'import'>('manual');
@@ -83,19 +77,7 @@
     }
   });
 
-  async function loadMcpGrants() {
-    try {
-      const grants = await mcpGrantsList('ssh');
-      const next: Record<string, { enabled: boolean; scope: string }> = {};
-      for (const g of grants) next[g.resourceId] = { enabled: g.enabled, scope: g.scope };
-      mcpGrants = next;
-    } catch {
-      // Non-fatal: the SSH panel works without the MCP server.
-    }
-  }
-
   onMount(() => {
-    void loadMcpGrants();
     loadSshProfiles();
     // Probe ~/.ssh/config quietly — only used to enable the empty-state
     // import callout. No prompt or banner unless the user has zero
@@ -283,14 +265,6 @@
     });
     items.push({ label: '', action: () => {}, separator: true });
     items.push({
-      label: 'MCP access…',
-      icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/><circle cx="12" cy="12" r="3"/></svg>',
-      action: () => {
-        mcpTarget = profile;
-        showMcp = true;
-      },
-    });
-    items.push({
       label: 'Edit',
       icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
       action: () => {
@@ -416,12 +390,6 @@
           <div class="ncoll-text">
             <div class="ncoll-row-top">
               <span class="ncoll-name">{profile.name}</span>
-              {#if mcpGrants[profile.id]?.enabled}
-                <span
-                  class="mcp-chip"
-                  title="Exposed to MCP — {mcpGrants[profile.id].scope === 'read_only' ? 'read-only' : mcpGrants[profile.id].scope === 'service_control' ? 'service control' : 'full shell'}"
-                >MCP</span>
-              {/if}
             </div>
             <div class="ncoll-row-bot">
               <span class="ncoll-sub">{profile.username}@{profile.host}{profile.port !== 22 ? `:${profile.port}` : ''}</span>
@@ -444,7 +412,6 @@
 
 <NewSshProfileModal bind:show={showAdd} initialView={addInitialView} />
 <EditSshProfileModal bind:show={showEdit} bind:profile={editTarget} />
-<SshMcpAccessModal bind:show={showMcp} bind:profile={mcpTarget} onsaved={loadMcpGrants} />
 
 <ConfirmDialog
   bind:show={confirmShow}
@@ -626,19 +593,6 @@
     color: var(--t3);
     transition: background 0.1s, color 0.1s;
     padding: 0;
-  }
-  .mcp-chip {
-    margin-left: 6px;
-    padding: 0 5px;
-    border-radius: 4px;
-    font-size: 9.5px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    line-height: 14px;
-    color: var(--accent);
-    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    flex-shrink: 0;
   }
   .ncoll-hdr:hover .coll-menu { display: flex; }
   .coll-menu:hover { background: var(--b1); color: var(--t1); }

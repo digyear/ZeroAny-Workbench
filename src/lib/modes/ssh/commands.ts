@@ -85,29 +85,3 @@ export const sshKillTerminal = (terminalId: string) =>
  *  `requestId` matches the payload from the `ssh:auth-prompts` event. */
 export const sshSubmitAuthPrompts = (requestId: string, answers: string[]) =>
   invoke<void>('ssh_submit_auth_prompts', { requestId, answers });
-
-// ── MCP exposure grants ─────────────────────────────────────────────────────
-// Which saved hosts an external agent may reach through the built-in MCP
-// server, and how far. `resourceKind` is 'ssh' today ('sql' later) so the
-// same two commands serve every mode.
-
-export type McpScope = 'read_only' | 'service_control' | 'full';
-
-export interface McpGrant {
-  resourceKind: string;
-  resourceId: string;
-  enabled: boolean;
-  scope: McpScope;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export const mcpGrantsList = (resourceKind: string) =>
-  invoke<McpGrant[]>('mcp_grants_list', { resourceKind });
-
-export const mcpGrantSet = (
-  resourceKind: string,
-  resourceId: string,
-  enabled: boolean,
-  scope: McpScope,
-) => invoke<void>('mcp_grant_set', { resourceKind, resourceId, enabled, scope });

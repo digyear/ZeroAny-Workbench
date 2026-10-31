@@ -68,7 +68,7 @@ pub(super) async fn profiles_list(pool: &SqlitePool) -> Result<Value, (i32, Stri
         "profiles": rows,
         "count": count,
         "note": if count == 0 {
-            "No SSH host is exposed to MCP yet — enable one in the app's SSH panel (MCP access)."
+            "No SSH connection is exposed to MCP yet — enable one under Settings → MCP."
         } else {
             "Commands are checked against each host's MCP scope before they run."
         },
@@ -106,7 +106,7 @@ pub(super) async fn exec(pool: &SqlitePool, args: &Value) -> Result<Value, (i32,
         .ok_or((
             -32603,
             format!(
-                "profile `{}` is not exposed to MCP — enable it in the app's SSH panel",
+                "profile `{}` is not exposed to MCP — enable it under Settings → MCP",
                 profile_id
             ),
         ))?;

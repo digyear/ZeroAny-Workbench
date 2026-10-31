@@ -28,4 +28,7 @@ pub use server::{start, McpHandle};
 
 /// Re-exported so the SSH regression tests can drive the exec collector
 /// against a fixture session.
+// Re-exported for the SSH fixture test in `modes::ssh::ssh_session`;
+// nothing outside tests needs the handle-level helper.
+#[cfg(test)]
 pub(crate) use ssh::exec_on_handle;
