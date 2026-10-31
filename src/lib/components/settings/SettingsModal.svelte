@@ -194,6 +194,7 @@
                 });
             }, 50);
         }
+        else if (key === "mcp") activeTab = "mcp";
         else if (key === "sql") activeTab = "sql";
         else if (key === "nosql") activeTab = "nosql";
         else if (key === "explorer") activeTab = "explorer";
