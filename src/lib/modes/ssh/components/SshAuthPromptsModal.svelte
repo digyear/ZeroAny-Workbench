@@ -33,6 +33,20 @@
     }
   });
 
+  // Focus the first field as soon as a round appears: without this the
+  // keystrokes went to the xterm behind the modal and the code never landed
+  // in the input (the modal had no autofocus).
+  let formEl: HTMLDivElement | null = $state(null);
+  $effect(() => {
+    const round = active;
+    if (!round) return;
+    requestAnimationFrame(() => {
+      const first = formEl?.querySelector<HTMLInputElement>('input');
+      first?.focus();
+      first?.select();
+    });
+  });
+
   let unlisten: UnlistenFn | null = null;
 
   onMount(async () => {
@@ -83,7 +97,13 @@
 
 {#if active}
   <Modal show={true} title={active.name || 'SSH Authentication Required'} width="420px">
-    <div class="ap-form" onkeydown={handleKey} role="dialog" aria-label="SSH authentication prompts">
+    <div
+      class="ap-form"
+      bind:this={formEl}
+      onkeydown={handleKey}
+      role="dialog"
+      aria-label="SSH authentication prompts"
+    >
       {#if active.instructions}
         <p class="ap-instructions">{active.instructions}</p>
       {/if}

@@ -319,10 +319,19 @@ async fn run_auth(
             let passphrase = spec.secret.as_deref();
             let keypair = russh_keys::load_secret_key(key_path, passphrase)
                 .map_err(|e| format!("load key: {}", e))?;
-            handle
+            let primary = handle
                 .authenticate_publickey(&spec.username, Arc::new(keypair))
                 .await
-                .map_err(|e| format!("ssh auth publickey: {}", e))?
+                .map_err(|e| format!("ssh auth publickey: {}", e))?;
+            if primary {
+                true
+            } else {
+                // Key + OTP hosts: the key satisfies the first factor and the
+                // server answers by offering `keyboard-interactive` for the
+                // second. Without this fallback such hosts just reported
+                // "authentication failed" and the user never saw a code field.
+                try_keyboard_interactive_fallback(handle, &spec.username, None).await
+            }
         }
         "password" => {
             // Three cases:
@@ -339,19 +348,36 @@ async fn run_auth(
             //      VS Code, Zed, etc.
             match spec.secret.clone() {
                 Some(password) => {
-                    let ok = handle
+                    match handle
                         .authenticate_password(&spec.username, password.clone())
                         .await
-                        .map_err(|e| format!("ssh auth password: {}", e))?;
-                    if ok {
-                        true
-                    } else {
-                        try_keyboard_interactive_with_ui(
-                            handle,
-                            &spec.username,
-                            Some(&password),
-                        )
-                        .await?
+                    {
+                        Ok(true) => true,
+                        // Rejected, or the server refuses the `password` method
+                        // outright (PAM-only hosts answer with
+                        // keyboard-interactive): drive the prompts so the user
+                        // can enter password and OTP.
+                        Ok(false) => {
+                            try_keyboard_interactive_with_ui(
+                                handle,
+                                &spec.username,
+                                Some(&password),
+                            )
+                            .await?
+                        }
+                        Err(error) => {
+                            log::debug!(
+                                target: "ssh::auth",
+                                "password method rejected ({}), trying keyboard-interactive",
+                                error
+                            );
+                            try_keyboard_interactive_fallback(
+                                handle,
+                                &spec.username,
+                                Some(&password),
+                            )
+                            .await
+                        }
                     }
                 }
                 None => {
@@ -359,7 +385,15 @@ async fn run_auth(
                 }
             }
         }
-        "agent" => try_agent_auth(handle, &spec.username).await?,
+        "agent" => {
+            if try_agent_auth(handle, &spec.username).await? {
+                true
+            } else {
+                // Agent + OTP: same story as key auth — the agent proves the
+                // first factor, keyboard-interactive carries the code.
+                try_keyboard_interactive_fallback(handle, &spec.username, None).await
+            }
+        }
         "interactive" => {
             // Keyboard-interactive PAM auth driven by frontend prompts.
             // Used for servers like password+OTP setups where the SSH
@@ -402,6 +436,29 @@ struct AuthPromptsPayload {
 struct AuthPrompt {
     prompt: String,
     echo: bool,
+}
+
+/// Second-factor fallback for hosts that require MFA: a successful key /
+/// agent / password step is answered by the server with a
+/// `keyboard-interactive` round for the one-time code. Errors here mean the
+/// server does not offer keyboard-interactive at all, which is not a new
+/// failure — the caller keeps its original result (plain "auth failed").
+async fn try_keyboard_interactive_fallback(
+    handle: &mut russh::client::Handle<ClientHandler>,
+    username: &str,
+    pre_stored_secret: Option<&str>,
+) -> bool {
+    match try_keyboard_interactive_with_ui(handle, username, pre_stored_secret).await {
+        Ok(ok) => ok,
+        Err(error) => {
+            log::debug!(
+                target: "ssh::auth",
+                "keyboard-interactive fallback unavailable: {}",
+                error
+            );
+            false
+        }
+    }
 }
 
 /// Drive a keyboard-interactive auth flow. Each `InfoRequest` round emits
