@@ -226,16 +226,37 @@
   .stg-card-row:first-child {
     border-top: none;
   }
+  /* Same rule as the settings card select — native rendering in WebKitGTK
+     paints the control (and its popup) white, which is unreadable on this
+     theme, so appearance is turned off and the chevron drawn by hand. */
   .stg-select {
-    font-family: var(--ui);
-    font-size: 11.5px;
-    color: var(--t1);
     background: var(--surface-hover);
     border: 1px solid var(--b1);
-    border-radius: 7px;
-    padding: 4px 8px;
-    cursor: pointer;
+    border-radius: var(--radius-md, 7px);
+    padding: 5px 10px;
+    padding-right: 28px;
+    color: var(--t1);
+    font-family: var(--ui);
+    font-size: 11.5px;
+    outline: none;
+    cursor: default;
+    min-width: 132px;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    -webkit-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23b0b0c8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='3 5 6 8 9 5'/></svg>");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    background-size: 10px 10px;
     flex-shrink: 0;
+  }
+  .stg-select:focus {
+    border-color: var(--acc);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--acc) 12%, transparent);
+  }
+  .stg-select option {
+    background: var(--n, #1b1b2b);
+    color: var(--t1);
   }
   .stg-select:disabled {
     opacity: 0.5;
