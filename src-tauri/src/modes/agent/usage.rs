@@ -674,9 +674,20 @@ fn discover_sessions_for_project(
 
 fn discover_sessions_global(
     provider: Option<&str>,
-) -> Result<(Vec<ProviderDiscoveredSession>, Vec<String>), String> {
+) -> Result<
+    (
+        Vec<ProviderDiscoveredSession>,
+        Vec<String>,
+        HashMap<String, usize>,
+    ),
+    String,
+> {
     let mut out = Vec::new();
     let mut errors = Vec::new();
+    // provider → rows found. Only providers that scanned WITHOUT error and
+    // were not truncated by the per-provider cap may have their catalog
+    // entries pruned (see `upsert_discovered_sessions_into_catalog`).
+    let mut counts: HashMap<String, usize> = HashMap::new();
     let providers: Vec<&str> = if let Some(provider) = provider {
         vec![normalize_agent_provider(Some(provider))?]
     } else {
@@ -695,20 +706,24 @@ fn discover_sessions_global(
             _ => Ok(Vec::new()),
         };
         match result {
-            Ok(mut rows) => out.append(&mut rows),
+            Ok(mut rows) => {
+                counts.insert(p.to_string(), rows.len());
+                out.append(&mut rows);
+            }
             Err(e) => {
                 log::warn!(target: "agent::discovery", "{} scan failed: {}", p, e);
                 errors.push(format!("{}: {}", p, e));
             }
         }
     }
-    Ok((out, errors))
+    Ok((out, errors, counts))
 }
 
 async fn upsert_discovered_sessions_into_catalog(
     pool: &SqlitePool,
     discovered: Vec<ProviderDiscoveredSession>,
     mut errors: Vec<String>,
+    prunable_providers: Vec<String>,
 ) -> Result<DiscoveredSessionScanSummary, String> {
     // 如果扫描完全失败（没有任何发现且有错误），清空 catalog
     if discovered.is_empty() && !errors.is_empty() {
@@ -749,8 +764,28 @@ async fn upsert_discovered_sessions_into_catalog(
     // 批量事务：一次性 upsert 所有发现的 sessions，避免 394 次独立提交
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     let mut upserted = 0;
+    // Catalog row ids seen in THIS scan — anything else for a provider whose
+    // scan was authoritative gets pruned at the end.
+    let mut seen_ids: Vec<String> = Vec::with_capacity(discovered.len());
+    let mut skipped_missing_project = 0usize;
 
     for item in discovered {
+        // A session whose working directory is gone cannot be resumed (the CLI
+        // spawns in that cwd), and per-session worktrees are removed when their
+        // session is deleted — those rows used to linger forever and showed up
+        // as dead entries. Dropping them from the catalog keeps Session Center
+        // honest; they reappear if the directory comes back.
+        if let Some(path) = item
+            .project_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
+            if !std::path::Path::new(path).is_dir() {
+                skipped_missing_project += 1;
+                continue;
+            }
+        }
         let project_identity = item
             .project_path
             .as_deref()
@@ -778,6 +813,8 @@ async fn upsert_discovered_sessions_into_catalog(
         } else {
             format!("{}:{}:{}", upsert.provider, profile, upsert.external_session_id)
         };
+        seen_ids.push(id.clone());
+
         let created_at = upsert
             .created_at
             .as_deref()
@@ -842,6 +879,51 @@ async fn upsert_discovered_sessions_into_catalog(
 
     tx.commit().await.map_err(|e| e.to_string())?;
 
+    if skipped_missing_project > 0 {
+        log::info!(
+            target: "agent::discovery",
+            "Skipped {} discovered session(s) whose project directory no longer exists",
+            skipped_missing_project
+        );
+    }
+
+    // Prune stale catalog rows: the catalog is a cache, and until now nothing
+    // ever removed an entry. A conversation deleted from disk (project gone,
+    // `claude --resume` cleanup, removed worktree) simply stopped being
+    // re-discovered and stayed listed forever as a dead session.
+    //
+    // Only providers whose scan completed without error AND was not truncated
+    // by the per-provider cap are authoritative — a partial scan must never
+    // wipe the rest. Adopted rows survive: they back a live Workbench session.
+    if !prunable_providers.is_empty() {
+        let seen_json = serde_json::to_string(&seen_ids).map_err(|e| e.to_string())?;
+        for provider in &prunable_providers {
+            let pruned = sqlx::query(
+                "DELETE FROM agent_discovered_sessions WHERE provider = ? AND adopted_agent_session_id IS NULL AND id NOT IN (SELECT value FROM json_each(?))",
+            )
+            .bind(provider)
+            .bind(&seen_json)
+            .execute(pool)
+            .await;
+            match pruned {
+                Ok(result) if result.rows_affected() > 0 => log::info!(
+                    target: "agent::discovery",
+                    "Pruned {} stale {} row(s) from the discovered-session catalog",
+                    result.rows_affected(),
+                    provider
+                ),
+                Ok(_) => {}
+                // Cleanup is best-effort: a failed prune must not fail the scan.
+                Err(error) => log::warn!(
+                    target: "agent::discovery",
+                    "catalog prune failed for {}: {}",
+                    provider,
+                    error
+                ),
+            }
+        }
+    }
+
     Ok(DiscoveredSessionScanSummary {
         scanned,
         upserted,
@@ -879,12 +961,25 @@ pub async fn scan_discovered_sessions_into_catalog(
         .map(|value| value.eq_ignore_ascii_case("hermes"))
         .unwrap_or(true);
     let provider_owned = provider.map(str::to_string);
-    let (discovered, errors) = tauri::async_runtime::spawn_blocking(move || {
+    let (discovered, errors, scanned_counts) = tauri::async_runtime::spawn_blocking(move || {
         discover_sessions_global(provider_owned.as_deref())
     })
     .await
     .map_err(|e| format!("discovery thread: {}", e))??;
-    let summary = upsert_discovered_sessions_into_catalog(pool, discovered, errors).await?;
+    // A provider that hit the per-provider cap may have more sessions than we
+    // saw, so it can't drive pruning.
+    let prunable_providers: Vec<String> = scanned_counts
+        .into_iter()
+        .filter(|(_, found)| *found < GLOBAL_SCAN_CAP_PER_PROVIDER)
+        .map(|(provider, _)| provider)
+        .collect();
+    let summary = upsert_discovered_sessions_into_catalog(
+        pool,
+        discovered,
+        errors,
+        prunable_providers,
+    )
+    .await?;
     if includes_hermes {
         match purge_cron_hermes_catalog_rows(pool).await {
             Ok(0) => {}
@@ -4016,6 +4111,99 @@ mod discovery_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A scan is authoritative for a provider only when it completed and was
+    /// not capped: rows it did NOT see are dead sessions (deleted transcript,
+    /// removed worktree) and must leave the catalog. Adopted rows are kept
+    /// because they back a live Workbench session.
+    #[tokio::test]
+    async fn catalog_prune_drops_rows_not_seen_in_scan() {
+        let pool = adoption_test_pool().await;
+        let dir = unique_test_dir("zeroany-workbench-catalog-prune");
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.to_string_lossy().to_string();
+        let now = "2026-10-31T00:00:00+00:00";
+
+        for (id, ext, adopted) in [
+            ("claude:seen", "seen", None),
+            ("claude:gone", "gone", None),
+            ("claude:adopted", "adopted", Some("row-1")),
+        ] {
+            sqlx::query(
+                "INSERT INTO agent_discovered_sessions (
+                    id, provider, profile, external_session_id, project_path,
+                    created_at, updated_at, last_seen_at, adopted_agent_session_id
+                 ) VALUES (?, 'claude', '', ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(ext)
+            .bind(&project)
+            .bind(now)
+            .bind(now)
+            .bind(now)
+            .bind(adopted)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let discovered = vec![ProviderDiscoveredSession {
+            provider: "claude".to_string(),
+            profile: None,
+            external_session_id: "seen".to_string(),
+            project_path: Some(project.clone()),
+            project_name: Some("prune-test".to_string()),
+            title: Some("still here".to_string()),
+            preview: None,
+            created_at: None,
+            updated_at: None,
+            parent_external_session_id: None,
+            session_kind: None,
+            source_path: None,
+        }];
+
+        upsert_discovered_sessions_into_catalog(&pool, discovered, Vec::new(), vec!["claude".to_string()])
+            .await
+            .unwrap();
+
+        let ids: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM agent_discovered_sessions ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            ids,
+            vec!["claude:adopted".to_string(), "claude:seen".to_string()],
+            "unseen non-adopted rows must be pruned, adopted rows kept"
+        );
+
+        // A provider that was NOT prunable (scan errored / capped) must survive
+        // untouched, otherwise a partial scan would wipe the catalog.
+        sqlx::query(
+            "INSERT INTO agent_discovered_sessions (
+                id, provider, profile, external_session_id, project_path,
+                created_at, updated_at, last_seen_at
+             ) VALUES ('codex:untouched', 'codex', '', 'untouched', ?, ?, ?, ?)",
+        )
+        .bind(&project)
+        .bind(now)
+        .bind(now)
+        .bind(now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        upsert_discovered_sessions_into_catalog(&pool, Vec::new(), Vec::new(), Vec::new())
+            .await
+            .unwrap();
+        let codex_left: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM agent_discovered_sessions WHERE provider = 'codex'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(codex_left, 1);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     async fn adoption_test_pool() -> SqlitePool {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
@@ -4046,7 +4234,10 @@ mod discovery_tests {
                 provider TEXT NOT NULL DEFAULT 'claude',
                 binary_path TEXT,
                 profile TEXT,
-                parent_external_session_id TEXT
+                parent_external_session_id TEXT,
+                initial_prompt TEXT,
+                spawn_state TEXT NOT NULL DEFAULT 'idle',
+                fork_kind TEXT
             );
             CREATE TABLE agent_discovered_sessions (
                 id TEXT PRIMARY KEY,
@@ -4132,6 +4323,7 @@ mod discovery_tests {
                 session_kind: Some("conversation".to_string()),
                 source_path: None,
             }],
+            Vec::new(),
             Vec::new(),
         )
         .await
