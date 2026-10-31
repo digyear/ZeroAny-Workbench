@@ -700,19 +700,6 @@
     }
 
 
-    // When a Pro subscription lapses, fall back from any premium theme to
-    // dark-solid so the user isn't stuck on a theme they can't access.
-    $effect(() => {
-        if ($cloudPlan !== "pro") {
-            const cfg = get(appearance);
-            const current = getThemes().find((t) => t.id === cfg.theme);
-            if (current?.premium) {
-                applyTheme("dark-solid", cfg.accentColor || DEFAULT_ACCENT_COLOR);
-                appearance.set({ ...cfg, theme: "dark-solid" });
-            }
-        }
-    });
-
     // Disable macOS autocorrect/autocapitalize on all inputs
     function disableAutocorrect(el: Element) {
         el.setAttribute("autocorrect", "off");

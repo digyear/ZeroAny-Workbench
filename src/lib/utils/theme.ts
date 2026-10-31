@@ -4,11 +4,10 @@ import { brandConfig, type BrandKey, type BrandOverride, type BrandDisplayMode }
 
 /**
  * The theme id that is CURRENTLY APPLIED to the DOM (palette + body class).
- * Distinct from `appearance.theme` (the persisted choice) because non-Pro
- * users can PREVIEW premium themes — `applyTheme()` runs DOM-only without
- * persisting, so the appearance store still reads the old theme. Effect
+ * Distinct from `appearance.theme` (the persisted choice) because
+ * `applyTheme()` runs DOM-only before the choice is saved. Effect
  * components (CatsParade, Embers, PetalFall, Starfield) MUST subscribe to
- * this store rather than `appearance.theme` so previewers see the full
+ * this store rather than `appearance.theme` so a theme switch repaints the
  * theme — palette + walking critters + rising embers + falling petals +
  * twinkling constellations — and understand what they're paying for.
  *
@@ -90,9 +89,6 @@ export interface Theme {
   // wins.
   accent?: string;
   lockAccent?: boolean;
-  // Pro-only themes. When true the theme tile shows a PRO badge and
-  // clicking it opens the upgrade modal instead of applying the theme.
-  premium?: boolean;
 }
 
 const themes: Record<string, Theme> = {
@@ -261,7 +257,7 @@ const themes: Record<string, Theme> = {
     glass: false,
     accent: '#907aa9',
   },
-  // Atelier — premium theme. Soft blush-pink surfaces (NOT another dark
+  // Atelier — soft blush-pink surfaces (NOT another dark
   // theme) with deep wine-ink text and a rose accent. A botanical SVG
   // wallpaper is painted ON TOP of the chrome via `body.fx-atelier::after`
   // with `mix-blend-mode: multiply` (see app.css), so the rose-wine line
@@ -296,9 +292,8 @@ const themes: Record<string, Theme> = {
     glass: false,
     accent: '#b8395a',
     effectClass: 'fx-atelier',
-    premium: true,
   },
-  // Petal — premium theme. Deep plum-violet surfaces with cherry-pink
+  // Petal — deep plum-violet surfaces with cherry-pink
   // accent. Animation: cherry blossom petals (PetalFall.svelte) drift
   // diagonally across the viewport while spinning — falling motion + spin
   // is mechanically different from Hearth's rising particles or Aurora
@@ -329,10 +324,9 @@ const themes: Record<string, Theme> = {
     glass: false,
     accent: '#f4a5b8',
     effectClass: 'fx-petal',
-    premium: true,
   },
 
-  // Celeste — premium theme. Deep cosmic violet-black with silver
+  // Celeste — deep cosmic violet-black with silver
   // accent. Animation: 70 twinkling pinpoint stars (Starfield.svelte) at
   // independent pulse rates, plus 2 rare shooting stars streaking across
   // the viewport. Stationary pulse + rare burst — mechanically different
@@ -363,16 +357,15 @@ const themes: Record<string, Theme> = {
     glass: false,
     accent: '#a8b8e8',
     effectClass: 'fx-celeste',
-    premium: true,
   },
 
-  // Hearth — premium theme. Deep warm charcoal with amber accent, and
+  // Hearth — deep warm charcoal with amber accent, and
   // an animated swarm of rising embers (rendered by Embers.svelte, gated
   // to the active appearance.theme). A subtle bottom-radial firelight
   // glow on body.fx-hearth (see app.css) anchors the embers as if they
   // were drifting up from a hidden fire. Different KIND of animation
   // from Aurora Drift (particle motion vs gradient drift) so the two
-  // premium themes feel distinct.
+  // warm/cool variants feel distinct.
   'hearth': {
     id: 'hearth',
     name: 'Hearth',
@@ -399,7 +392,6 @@ const themes: Record<string, Theme> = {
     glass: false,
     accent: '#ff8c42',
     effectClass: 'fx-hearth',
-    premium: true,
   },
   'carbon-grain': {
     id: 'carbon-grain',
@@ -426,7 +418,6 @@ const themes: Record<string, Theme> = {
     tokens: { str: '#b6c294', num: '#d4a373', key: '#a8b7d0', boo: '#d4a373' },
     glass: false,
     effectClass: 'fx-grain',
-    premium: true,
   },
   'crt-phosphor': {
     id: 'crt-phosphor',
@@ -453,7 +444,6 @@ const themes: Record<string, Theme> = {
     tokens: { str: '#b8ee88', num: '#ffe066', key: '#a8eecc', boo: '#ffe066' },
     glass: false,
     effectClass: 'fx-crt',
-    premium: true,
   },
   'aurora-drift': {
     id: 'aurora-drift',
@@ -480,7 +470,6 @@ const themes: Record<string, Theme> = {
     tokens: { str: '#9ccfd8', num: '#f6c177', key: '#8cb4e0', boo: '#eb6f92' },
     glass: false,
     effectClass: 'fx-aurora',
-    premium: true,
   },
 };
 

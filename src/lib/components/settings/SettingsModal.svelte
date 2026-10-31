@@ -3,7 +3,6 @@
     import ClaugeAIBalance from "$lib/components/settings/ClaugeAIBalance.svelte";
     import { invoke } from "@tauri-apps/api/core";
     import { cloudPlan, cloudSub, upgradeModalOpen } from "$lib/stores/cloud";
-    import AccountTabContent from "$lib/components/settings/AccountTabContent.svelte";
     import MobileTabContent from "$lib/components/settings/MobileTabContent.svelte";
     import McpAccessSection from "$lib/components/settings/McpAccessSection.svelte";
     import { getVersion } from "@tauri-apps/api/app";
@@ -117,7 +116,6 @@
     // + Updater + ClickHouse). 'rest' holds REST-only knobs (timeout, redirects,
     // SSL verify, max body).
     type SettingsTab =
-        | "account"
         | "general"
         | "appearance"
         | "shortcuts"
@@ -158,7 +156,7 @@
         // Map sub-key → activeTab + (optional) agentSubTab. Mirrors the
         // legacy `activeModal === 'settings:*'` mapping but flattened
         // (the 'settings:' prefix is implicit now).
-        if (key === "account") activeTab = "account";
+        if (key === "account") activeTab = "general";
         else if (key === "general") activeTab = "general";
         else if (key === "appearance") activeTab = "appearance";
         else if (key === "shortcuts") activeTab = "shortcuts";
@@ -935,12 +933,6 @@
     const tabs: TabsItem[] = [
         {
             kind: "tab",
-            key: "account",
-            label: "Account",
-            icon: '<path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/>',
-        },
-        {
-            kind: "tab",
             key: "general",
             label: "General",
             icon: '<path d="M12.22 2h-.44a2 2 0 00-2 2v.18a2 2 0 01-1 1.73l-.43.25a2 2 0 01-2 0l-.15-.08a2 2 0 00-2.73.73l-.22.38a2 2 0 00.73 2.73l.15.1a2 2 0 011 1.72v.51a2 2 0 01-1 1.74l-.15.09a2 2 0 00-.73 2.73l.22.38a2 2 0 002.73.73l.15-.08a2 2 0 012 0l.43.25a2 2 0 011 1.73V20a2 2 0 002 2h.44a2 2 0 002-2v-.18a2 2 0 011-1.73l.43-.25a2 2 0 012 0l.15.08a2 2 0 002.73-.73l.22-.39a2 2 0 00-.73-2.73l-.15-.08a2 2 0 01-1-1.74v-.5a2 2 0 011-1.74l.15-.09a2 2 0 00.73-2.73l-.22-.38a2 2 0 00-2.73-.73l-.15.08a2 2 0 01-2 0l-.43-.25a2 2 0 01-1-1.73V4a2 2 0 00-2-2z"/>',
@@ -1101,36 +1093,10 @@
         }
     }
 
-    // Theme preview state for free users. When non-null, a pro theme is
-    // being previewed DOM-only (not persisted). previewOriginalTheme is
-    // the saved theme we revert to on cancel / close / tab-leave.
-    let previewThemeId = $state<string | null>(null);
-    let previewOriginalTheme = $state<string | null>(null);
-
-    // What the picker should highlight as active — the previewed theme
-    // if one is being tried, else the actually-saved theme.
-    let displayTheme = $derived(previewThemeId ?? currentTheme);
+    // What the picker highlights as active.
+    let displayTheme = $derived(currentTheme);
 
     async function handleThemeChange(themeId: string) {
-        const themeDef = getTheme(themeId);
-        const isPremium = !!themeDef?.premium;
-        const isFreeUser = $cloudPlan !== "pro";
-
-        if (isPremium && isFreeUser) {
-            // Enter / swap preview mode. Apply DOM-only — do NOT persist.
-            if (previewOriginalTheme === null) {
-                previewOriginalTheme = currentTheme;
-            }
-            previewThemeId = themeId;
-            applyTheme(themeId, accentColor);
-            return;
-        }
-
-        // Non-premium pick OR pro user: drop any active preview and persist.
-        if (previewThemeId !== null) {
-            previewThemeId = null;
-            previewOriginalTheme = null;
-        }
         applyTheme(themeId, accentColor);
         const config: AppearanceConfig = {
             theme: themeId,
@@ -1139,50 +1105,6 @@
         appearance.set(config);
         await saveAppearance(config);
     }
-
-    // User clicked Cancel in the preview banner — revert to their saved
-    // theme and exit preview.
-    function cancelThemePreview() {
-        if (previewOriginalTheme === null) return;
-        applyTheme(previewOriginalTheme, accentColor);
-        previewThemeId = null;
-        previewOriginalTheme = null;
-    }
-
-    // User clicked Upgrade in the preview banner — open the upgrade
-    // modal. The plan-flip $effect below handles auto-finalize if the
-    // upgrade succeeds; if they dismiss the modal we keep the preview
-    // active so they can see it and choose Cancel.
-    function upgradeFromThemePreview() {
-        upgradeModalOpen.set(true);
-    }
-
-    // Auto-revert preview when the user navigates away from Appearance or
-    // closes the Settings modal entirely — otherwise they'd return to a
-    // pro theme they never actually own.
-    $effect(() => {
-        if (previewThemeId === null) return;
-        if (!show || activeTab !== "appearance") {
-            cancelThemePreview();
-        }
-    });
-
-    // If the user successfully upgrades while a preview is showing, save
-    // the previewed theme as their real choice and exit preview mode.
-    $effect(() => {
-        if (previewThemeId === null) return;
-        if ($cloudPlan === "pro") {
-            const themeId = previewThemeId;
-            previewThemeId = null;
-            previewOriginalTheme = null;
-            const config: AppearanceConfig = {
-                theme: themeId,
-                accentColor: accentColor,
-            };
-            appearance.set(config);
-            saveAppearance(config).catch(() => {});
-        }
-    });
 
     async function handleAccentChange(color: string) {
         document.documentElement.style.setProperty("--acc", color);
@@ -1713,9 +1635,7 @@
 
             <!-- Content pane -->
             <div class="stg-content">
-                {#if activeTab === "account"}
-                    <AccountTabContent />
-                {:else if activeTab === "general"}
+                {#if activeTab === "general"}
                     <div class="stg-card-stack">
                         <!-- Proxy card -->
                         <section class="stg-card">
@@ -2601,8 +2521,6 @@
                                 <button
                                     class="theme-card"
                                     class:active={displayTheme === theme.id}
-                                    class:locked={theme.premium &&
-                                        $cloudPlan !== "pro"}
                                     onclick={() => handleThemeChange(theme.id)}
                                 >
                                     <div class="theme-preview">
@@ -2623,46 +2541,9 @@
                                                 theme.description}</span
                                         >
                                     </div>
-                                    {#if theme.premium}
-                                        <span class="pro-badge">PRO</span>
-                                    {/if}
                                 </button>
                             {/each}
                         </div>
-
-                        {#if previewThemeId}
-                            {@const previewName =
-                                getTheme(previewThemeId)?.name ?? "Theme"}
-                            <div class="theme-preview-banner" role="alert">
-                                <div class="theme-preview-info">
-                                    <span class="theme-preview-eyebrow"
-                                        >PREVIEWING</span
-                                    >
-                                    <strong class="theme-preview-name"
-                                        >{previewName}</strong
-                                    >
-                                    <p class="theme-preview-sub">
-                                        This is a premium theme. Upgrade to keep
-                                        it, or cancel to go back to your current
-                                        theme.
-                                    </p>
-                                </div>
-                                <div class="theme-preview-actions">
-                                    <button
-                                        class="theme-preview-btn"
-                                        onclick={cancelThemePreview}
-                                    >
-                                        Cancel
-                                    </button>
-                                    <button
-                                        class="theme-preview-btn theme-preview-btn-primary"
-                                        onclick={upgradeFromThemePreview}
-                                    >
-                                        Upgrade to Pro
-                                    </button>
-                                </div>
-                            </div>
-                        {/if}
                     </div>
 
                     <div class="stg-section">
