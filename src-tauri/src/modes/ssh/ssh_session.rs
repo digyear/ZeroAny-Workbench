@@ -63,7 +63,7 @@ impl client::Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh_keys::key::PublicKey,
+        _server_public_key: &russh::keys::key::PublicKey,
     ) -> Result<bool, Self::Error> {
         Ok(true)
     }
@@ -391,7 +391,7 @@ async fn run_auth(
                 .as_ref()
                 .ok_or_else(|| "key auth requires key_path".to_string())?;
             let passphrase = spec.secret.as_deref();
-            let keypair = russh_keys::load_secret_key(key_path, passphrase)
+            let keypair = russh::keys::load_secret_key(key_path, passphrase)
                 .map_err(|e| format!("load key: {}", e))?;
             let primary = handle
                 .authenticate_publickey(&spec.username, Arc::new(keypair))

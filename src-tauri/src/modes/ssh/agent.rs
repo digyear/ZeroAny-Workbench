@@ -11,7 +11,7 @@
 //! using the device on our behalf.
 
 use russh::client::Handle;
-use russh_keys::agent::client::AgentClient;
+use russh::keys::agent::client::AgentClient;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Try authenticating to `handle` as `username` using whatever keys the
