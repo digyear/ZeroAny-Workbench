@@ -11,6 +11,7 @@
     agentCreateSession,
     agentGetProjectPreferences,
     agentListContexts,
+    agentListProfiles,
     agentIsGitRepo,
   } from '../commands';
   import {
@@ -37,6 +38,10 @@
   let projectPath = $state('');
   let projectName = $state('');
   let provider = $state<AgentProvider>('claude');
+  // Hermes profiles (`~/.hermes/profiles/<name>`); empty for other providers.
+  let profile = $state('');
+  let profiles = $state<string[]>([]);
+  let rememberedProfile = $state('');
   let purpose = $state('Development');
   let worktree = $state(false);
   let contextNames = $state<string[]>([]);
@@ -112,11 +117,60 @@
       if (prefs.provider) provider = prefs.provider as AgentProvider;
       if (prefs.purpose) purpose = prefs.purpose;
       if (prefs.contextNames?.length) contextNames = prefs.contextNames;
+      if (prefs.profile) {
+        rememberedProfile = prefs.profile;
+        if ((prefs.provider ?? provider) === 'hermes') profile = prefs.profile;
+      }
       rememberedNote = 'remembered';
     } catch {
       rememberedNote = '';
     }
   }
+
+  /** Hermes profiles are directories under ~/.hermes/profiles; the list comes
+   *  from the backend so we never guess. Other providers have none. */
+  async function loadProfiles() {
+    try {
+      const list = await agentListProfiles('hermes');
+      profiles = list;
+      if (profile && list.includes(profile)) return;
+      if (rememberedProfile && list.includes(rememberedProfile)) {
+        profile = rememberedProfile;
+        return;
+      }
+      profile = pickDefaultProfile(list);
+    } catch {
+      profiles = [];
+    }
+  }
+
+  /** No memory yet → the profile this project last used with Hermes, else
+   *  `default`, else whatever exists. */
+  function pickDefaultProfile(list: string[]): string {
+    if (!list.length) return '';
+    const root = projectRootOf(projectPath);
+    const used = ($agentSessions as AgentSession[])
+      .filter(
+        (s) =>
+          s.provider === 'hermes' &&
+          !!s.profile &&
+          (s.projectRoot || s.projectPath) === root,
+      )
+      .sort((a, b) => (b.lastUsedAt || '').localeCompare(a.lastUsedAt || ''));
+    for (const s of used) if (s.profile && list.includes(s.profile)) return s.profile;
+    return list.includes('default') ? 'default' : list[0];
+  }
+
+  // Load the Hermes profile list the first time Hermes is selected (and drop
+  // the selection when switching to a provider that has no profiles).
+  $effect(() => {
+    if (provider === 'hermes') {
+      if (profiles.length === 0) void loadProfiles();
+      return;
+    }
+    if (profiles.length) profiles = [];
+    if (profile) profile = '';
+  });
 
   async function chooseProject(p: ProjectChoice) {
     projectPath = p.path;
@@ -176,6 +230,7 @@
       const isGit = await agentIsGitRepo(projectPath);
       const session = await agentCreateSession(projectPath, parsed.text || raw, {
         provider,
+        profile: provider === 'hermes' ? (profile || 'default') : undefined,
         purpose,
         worktreeEnabled: worktree && isGit,
         contextNames: [...contextNames, ...parsed.contexts],
@@ -230,7 +285,7 @@
         class="qs-input"
         bind:value={prompt}
         placeholder="What should the agent do?  (#123 · /branch · @context)"
-        rows="3"
+        rows="4"
         onkeydown={(e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
@@ -245,6 +300,16 @@
             <option value={p.id}>{p.label}</option>
           {/each}
         </select>
+        {#if provider === 'hermes'}
+          <select class="qs-chip" bind:value={profile} title="Hermes profile">
+            {#if profiles.length === 0}
+              <option value="">profile…</option>
+            {/if}
+            {#each profiles as p (p)}
+              <option value={p}>{p}</option>
+            {/each}
+          </select>
+        {/if}
         <select class="qs-chip" bind:value={purpose} title="Purpose">
           {#each SESSION_PURPOSES as p (p.id)}
             <option value={p.id}>{p.id}</option>
@@ -293,11 +358,11 @@
     z-index: var(--z-modal, 200);
   }
   .qs {
-    width: min(680px, 92vw);
+    width: min(760px, 92vw);
     background: var(--n2, #17171b);
     border: 1px solid var(--b1, #2a2a31);
     border-radius: 12px;
-    padding: 12px;
+    padding: 14px;
     box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
     font-family: var(--ui);
     color: var(--t1, #ededf0);
@@ -353,6 +418,7 @@
   .qs-path { color: var(--t4); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; }
   .qs-input {
     width: 100%;
+    min-height: 108px;
     resize: none;
     background: var(--b-subtle, #101014);
     border: 1px solid var(--b1);
