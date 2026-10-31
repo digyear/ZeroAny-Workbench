@@ -57,13 +57,12 @@ fn app_handle() -> Option<&'static AppHandle> {
 /// SSH-mode design doc for the planned known-hosts verification).
 pub struct ClientHandler;
 
-#[async_trait::async_trait]
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &russh::keys::key::PublicKey,
+        _server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         Ok(true)
     }
@@ -394,9 +393,13 @@ async fn run_auth(
             let keypair = russh::keys::load_secret_key(key_path, passphrase)
                 .map_err(|e| format!("load key: {}", e))?;
             let primary = handle
-                .authenticate_publickey(&spec.username, Arc::new(keypair))
+                .authenticate_publickey(
+                    &spec.username,
+                    russh::keys::PrivateKeyWithHashAlg::new(Arc::new(keypair), None),
+                )
                 .await
-                .map_err(|e| format!("ssh auth publickey: {}", e))?;
+                .map_err(|e| format!("ssh auth publickey: {}", e))?
+                .success();
             if primary {
                 true
             } else {
@@ -444,7 +447,7 @@ async fn run_auth(
                             .authenticate_password(&spec.username, password)
                             .await
                         {
-                            Ok(ok) => ok,
+                            Ok(result) => result.success(),
                             Err(error) => {
                                 log::debug!(
                                     target: "ssh::auth",
@@ -597,7 +600,7 @@ async fn try_keyboard_interactive_with_ui(
     for _ in 0..8 {
         match response {
             KeyboardInteractiveAuthResponse::Success => return Ok(true),
-            KeyboardInteractiveAuthResponse::Failure => return Ok(false),
+            KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
             KeyboardInteractiveAuthResponse::InfoRequest {
                 name,
                 instructions,
