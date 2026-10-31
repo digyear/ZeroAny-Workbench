@@ -256,14 +256,14 @@ async fn open_tcp(spec: &SshAuthSpec) -> Result<tokio::net::TcpStream, String> {
 /// still want a one-time code. The caller reconnects and drives
 /// keyboard-interactive on the fresh connection.
 ///
-/// Why a reconnect: russh 0.45 only arms `CurrentRequest::KeyboardInteractive`
-/// during the service-accept handshake (`client/encrypted.rs`, the
-/// `WaitingAuthServiceRequest` branch). A later
-/// `authenticate_keyboard_interactive_start` on a handle that already carried
-/// a failed method goes through `write_auth_request_if_needed`, which writes
-/// the request *without* updating `auth_request.current` — so the server's
-/// INFO_REQUEST is dropped, `Reply::AuthInfoRequest` is never sent, and the
-/// auth future hangs until the outer timeout.
+/// Why a reconnect: whether a second auth exchange on an already-used handle
+/// is wired up correctly is a library detail we don't want to depend on. In
+/// russh 0.45 the KBI request state was only armed during the service-accept
+/// handshake, so `authenticate_keyboard_interactive_start` after a failed
+/// method wrote the request without updating `auth_request.current` — the
+/// server's INFO_REQUEST was dropped and the auth future hung until timeout.
+/// A fresh connection arms everything through the handshake, which is
+/// correct on every version.
 const NEED_KBI_RETRY: &str = "__zeroany_need_kbi_retry__";
 
 /// Run the SSH handshake and authentication on the given transport
@@ -1062,6 +1062,10 @@ mod mfa_ladder_tests {
 
     const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/mfa_ssh_server.py");
 
+    /// The scripted answers are one global queue, so two fixture tests must
+    /// never interleave: whichever arms last wins and the other starves.
+    static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     struct Fixture {
         child: Child,
         port: u16,
@@ -1129,6 +1133,7 @@ mod mfa_ladder_tests {
     #[tokio::test]
     #[ignore = "spawns python3 + paramiko to emulate a password+OTP bastion"]
     async fn password_plus_otp_ladder_reaches_the_code_round() {
+        let _serial = SERIAL.lock().await;
         init_logger();
         let Some(fixture) = start_fixture() else {
             panic!("fixture unavailable — needs python3 with paramiko");
@@ -1150,5 +1155,41 @@ mod mfa_ladder_tests {
             .await
             .expect("auth must succeed once the OTP is supplied");
         drop(handle);
+    }
+
+    /// The MCP `ssh_exec` path: exec a command on an authenticated session
+    /// and collect stdout / exit code. The fixture answers every exec with
+    /// `EXEC OK: <command>` and status 0.
+    #[tokio::test]
+    #[ignore = "spawns python3 + paramiko to emulate a password+OTP bastion"]
+    async fn mcp_exec_collects_stdout_and_exit_code() {
+        let _serial = SERIAL.lock().await;
+        init_logger();
+        let Some(fixture) = start_fixture() else {
+            panic!("fixture unavailable — needs python3 with paramiko");
+        };
+        set_scripted_prompt_answers(vec![vec!["123456".to_string()]]);
+
+        let spec = SshAuthSpec {
+            host: "127.0.0.1".to_string(),
+            port: fixture.port,
+            username: "test".to_string(),
+            auth_type: "password".to_string(),
+            key_path: None,
+            secret: Some("pw1".to_string()),
+        };
+        let handle = open_authenticated_ssh_session_with_spec(spec)
+            .await
+            .expect("auth must succeed");
+
+        let result = crate::modes::workspace::mcp::exec_on_handle(&handle, "uname -a")
+            .await
+            .expect("exec must succeed");
+        assert_eq!(result["exitCode"], 0);
+        assert!(
+            result["stdout"].as_str().unwrap_or("").contains("EXEC OK: uname -a"),
+            "unexpected stdout: {}",
+            result["stdout"]
+        );
     }
 }

@@ -201,7 +201,7 @@ A free-form spatial workspace where every open tab becomes a draggable window. P
 
 ## MCP
 
-ZeroAny Workbench ships an MCP server with **45+ tools** — `boards_*`, `cards_*`, `notes_*`, `rest_collection_*`, `coworkers_*`, `workspace_*`, `activity_feed`, and `cards_call_coworker` (so the agent in your terminal can `@-mention` a coworker on a card without leaving the shell). The server **auto-starts on launch** — no flag, no extra setup. Any MCP-speaking client can drive your workspace.
+ZeroAny Workbench ships an MCP server with **45+ tools** — `boards_*`, `cards_*`, `notes_*`, `rest_collection_*`, `coworkers_*`, `workspace_*`, `activity_feed`, `cards_call_coworker` (so the agent in your terminal can `@-mention` a coworker on a card without leaving the shell), and `ssh_profiles_list` / `ssh_exec` (so the same agent can run a command on any host you've saved in the SSH mode — key, agent or password auth, jump hosts included). The server **auto-starts on launch** — no flag, no extra setup. Any MCP-speaking client can drive your workspace and your servers.
 
 ### From Claude Desktop
 

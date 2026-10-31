@@ -21,6 +21,11 @@
 mod actor;
 mod dispatch;
 mod server;
+mod ssh;
 mod tools;
 
 pub use server::{start, McpHandle};
+
+/// Re-exported so the SSH regression tests can drive the exec collector
+/// against a fixture session.
+pub(crate) use ssh::exec_on_handle;

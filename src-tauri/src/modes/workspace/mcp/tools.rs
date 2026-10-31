@@ -15,6 +15,7 @@ pub(super) fn tool_descriptors() -> Value {
     tools.extend(shipping_schemas());
     tools.extend(meta_schemas());
     tools.extend(rest_schemas());
+    tools.extend(ssh_schemas());
     Value::Array(tools)
 }
 
@@ -786,6 +787,38 @@ fn rest_schemas() -> Vec<Value> {
                     "authData": { "type": "string" }
                 },
                 "required": ["id"]
+            }
+        }
+        ),
+    ]
+}
+
+/// SSH: saved hosts and one-shot command execution.
+fn ssh_schemas() -> Vec<Value> {
+    vec![
+        json!(
+        {
+            "name": "ssh_profiles_list",
+            "description": "List the SSH hosts saved in the app (name, host, port, username, auth type, jump host). Secrets are never returned. Use this to turn \"the staging box\" into the `profileId` that `ssh_exec` needs.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+        ),
+        json!(
+        {
+            "name": "ssh_exec",
+            "description": "Run one shell command on a saved SSH host and return its stdout, stderr and exit code. Each call dials a fresh connection (key / agent / password per the profile, including jump hosts and ProxyCommand), runs the command with `sh -c`, drains the output and disconnects — there is no persistent shell, so `cd` and exported variables do not carry over between calls. Output is capped at 128 KiB per stream (see `truncated`). Profiles that need a one-time code make the app pop its auth prompt; answer it there and the call continues.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "profileId": { "type": "string", "description": "Target host — an id from `ssh_profiles_list`." },
+                    "command": { "type": "string", "description": "Shell command to run on the remote host (executed with `sh -c`)." },
+                    "timeoutSecs": { "type": "integer", "description": "Budget for connect + auth + execution, in seconds. Default 60, clamped to 5..600. Raise it for long builds; a timeout closes the connection." }
+                },
+                "required": ["profileId", "command"]
             }
         }
         ),

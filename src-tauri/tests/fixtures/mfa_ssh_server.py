@@ -18,6 +18,10 @@ import threading
 import paramiko
 
 HOST, PORT = "127.0.0.1", int(sys.argv[1]) if len(sys.argv) > 1 else 2222
+# "simple" drops the MFA ladder and accepts any public key / the fixed
+# password straight away. Used by the MCP ssh_exec end-to-end check, which
+# drives the real app (no scripted prompt source there).
+SIMPLE = len(sys.argv) > 2 and sys.argv[2] == "simple"
 USER = "test"
 PASSWORD = "pw1"
 OTP = "123456"
@@ -30,10 +34,14 @@ class Server(paramiko.ServerInterface):
 
     def check_auth_password(self, username, password):
         self.password_tried = True
+        if SIMPLE and password == PASSWORD:
+            return paramiko.AUTH_SUCCESSFUL
         return paramiko.AUTH_FAILED
 
     def check_auth_publickey(self, username, key):
         self.password_tried = True
+        if SIMPLE:
+            return paramiko.AUTH_SUCCESSFUL
         return paramiko.AUTH_FAILED
 
     # keyboard-interactive -------------------------------------------------
@@ -61,6 +69,8 @@ class Server(paramiko.ServerInterface):
         return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
     def get_allowed_auths(self, username):
+        if SIMPLE:
+            return "publickey,password"
         if self.password_tried:
             return "keyboard-interactive"
         return "password,publickey"
@@ -101,7 +111,11 @@ def main():
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, PORT))
     srv.listen(5)
-    print(f"fixture listening on {HOST}:{PORT} user={USER} pw={PASSWORD} otp={OTP}", flush=True)
+    mode = "simple" if SIMPLE else "mfa"
+    print(
+        f"fixture listening on {HOST}:{PORT} user={USER} pw={PASSWORD} otp={OTP} mode={mode}",
+        flush=True,
+    )
     while True:
         conn, _ = srv.accept()
         threading.Thread(target=handle, args=(conn,), daemon=True).start()

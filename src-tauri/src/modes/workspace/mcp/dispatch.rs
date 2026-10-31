@@ -1435,6 +1435,10 @@ pub(super) async fn dispatch_tool(
             Ok(ok_text(serde_json::to_value(row).unwrap_or(Value::Null)))
         }
 
+        // ── SSH ──────────────────────────────────────────────────────
+        "ssh_profiles_list" => Ok(ok_text(super::ssh::profiles_list(pool).await?)),
+        "ssh_exec" => Ok(ok_text(super::ssh::exec(pool, &args).await?)),
+
         _ => Err((-32601, format!("Tool not found: {}", name))),
     };
     if result.is_ok() {
