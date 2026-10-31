@@ -62,3 +62,20 @@ pub async fn mcp_grant_set(
     crate::cloud::scheduler::bump("mcp");
     Ok(())
 }
+
+// ── Live sessions ──────────────────────────────────────────────────────────
+// The connections MCP can currently reuse: opened by a terminal login (which
+// is how a host behind a one-time code is reachable at all) and kept alive
+// for a grace period after the tab closes.
+
+/// What is parked right now, with the idle deadline for detached ones.
+#[tauri::command]
+pub async fn mcp_live_sessions() -> Result<Vec<serde_json::Value>, String> {
+    Ok(crate::modes::ssh::live::snapshot())
+}
+
+/// Drop a parked connection now instead of waiting out the idle timeout.
+#[tauri::command]
+pub async fn mcp_live_disconnect(profile_id: String) -> Result<bool, String> {
+    Ok(crate::modes::ssh::live::disconnect(&profile_id))
+}

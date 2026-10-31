@@ -1305,13 +1305,38 @@ mod mfa_ladder_tests {
             result["stdout"]
         );
 
+        // Closing the terminal detaches rather than closing: an agent must
+        // still be able to work for the idle window.
         drop(guard);
-        assert!(!super::super::live::has(profile_id), "guard must unregister");
+        assert!(
+            super::super::live::has(profile_id),
+            "the session must survive the terminal closing"
+        );
+        let snap = super::super::live::snapshot();
+        let row = snap
+            .iter()
+            .find(|r| r["profileId"] == profile_id)
+            .expect("detached session must be reported");
+        assert_eq!(row["attached"], serde_json::json!(false));
+        assert!(row["expiresInSecs"].is_number(), "detached rows carry a deadline");
+
+        let after = super::super::live::run(
+            profile_id,
+            "whoami",
+            std::time::Duration::from_secs(15),
+        )
+        .await
+        .expect("a detached session is still reusable")
+        .expect("exec must succeed after the terminal closed");
+        assert_eq!(after["exitCode"], 0);
+
+        assert!(super::super::live::disconnect(profile_id));
+        assert!(!super::super::live::has(profile_id), "disconnect must drop it");
         assert!(
             super::super::live::run(profile_id, "uname -a", std::time::Duration::from_secs(2))
                 .await
                 .is_none(),
-            "after the session ends there is nothing to reuse"
+            "after disconnect there is nothing to reuse"
         );
     }
 

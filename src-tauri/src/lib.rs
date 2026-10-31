@@ -612,6 +612,8 @@ pub fn run() {
             modes::ssh::profiles::ssh_list_profiles,
             commands::mcp_grants::mcp_grants_list,
             commands::mcp_grants::mcp_grant_set,
+            commands::mcp_grants::mcp_live_sessions,
+            commands::mcp_grants::mcp_live_disconnect,
             modes::ssh::profiles::ssh_create_profile,
             modes::ssh::profiles::ssh_update_profile,
             modes::ssh::profiles::ssh_delete_profile,
