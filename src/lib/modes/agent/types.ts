@@ -29,6 +29,8 @@ export interface AgentSession {
   initialPrompt: string | null;
   /** Spawn lifecycle: 'idle' | 'starting' | 'running' | 'exited' | 'failed'. */
   spawnState: string;
+  /** 'native' when created via ⋯ → Branch (provider-level fork). */
+  forkKind: string | null;
   /** Per-session override of the CLI binary location. null/empty =
    *  fall back to the standard $PATH lookup. Used when the user has
    *  the agent installed somewhere `find_binary` can't reach. */

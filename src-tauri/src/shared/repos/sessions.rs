@@ -282,6 +282,23 @@ pub async fn update_session_spawn_state(
     Ok(())
 }
 
+/// Record that `id` is a native provider fork of `parent_id`. Written after
+/// the insert so `insert_session` keeps its signature.
+pub async fn mark_session_forked(
+    pool: &SqlitePool,
+    id: &str,
+    parent_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE agent_sessions SET parent_session_id = ?, fork_kind = 'native' WHERE id = ?",
+    )
+    .bind(parent_id)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Sessions that would render nested under `id` in the left nav: manual
 /// children (`parent_session_id`) plus auto fork-lineage children whose
 /// `parent_external_session_id` matches this session's resume id and that

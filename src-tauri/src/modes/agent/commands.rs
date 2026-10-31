@@ -262,6 +262,87 @@ pub async fn agent_create_session(
     sessions_repo::get_session_by_id(pool.inner(), &id).await.map_err(|e| e.to_string())
 }
 
+/// ⋯ → Branch: copy this conversation into a NEW session using the provider's
+/// own fork support (Claude: `--resume <parent id> --fork-session`). Files stay
+/// in the same working tree; the two conversations diverge from here.
+///
+/// The new row deliberately keeps `claude_session_id` NULL: the spawn path
+/// resumes the PARENT id with the fork flag, and the capture poll then persists
+/// the forked conversation's own id. Storing the parent id here would make
+/// every later reopen resume the parent's history instead of the fork's.
+#[tauri::command]
+pub async fn agent_fork_session(
+    pool: State<'_, SqlitePool>,
+    session_id: String,
+) -> Result<AgentSession, String> {
+    let parent = sessions_repo::get_session_by_id(pool.inner(), &session_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if parent.provider != "claude" {
+        return Err(format!(
+            "Branch is only available for Claude sessions right now (native --fork-session); '{}' has no fork support.",
+            parent.provider
+        ));
+    }
+    if parent
+        .claude_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .is_none()
+    {
+        return Err(
+            "This session has no saved conversation yet — send it a message first, then branch."
+                .to_string(),
+        );
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().to_rfc3339();
+    let title = format!("{} ⑂", parent.title.trim());
+
+    sessions_repo::insert_session(
+        pool.inner(),
+        &id,
+        &title,
+        &parent.purpose,
+        &parent.project_path,
+        parent.project_root.as_deref(),
+        &parent.project_name,
+        &parent.context_prompt,
+        parent.skip_permissions,
+        parent.git_name.as_deref(),
+        parent.git_email.as_deref(),
+        &now,
+        &now,
+        &parent.provider,
+        parent.binary_path.as_deref(),
+        parent.profile.as_deref(),
+        None,
+        None,
+        0,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Context sets ride along: a branch is the same task with the same
+    // background, just a different continuation point.
+    if let Ok(contexts) = sessions_repo::list_contexts_for_session(pool.inner(), &parent.id).await {
+        for context in contexts {
+            let _ = sessions_repo::attach_context_to_session(pool.inner(), &id, &context.id).await;
+        }
+    }
+
+    sessions_repo::mark_session_forked(pool.inner(), &id, &parent.id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    sessions_repo::get_session_by_id(pool.inner(), &id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// First 40 chars of the first non-empty line — the Quick Bar title default.
 pub fn title_from_prompt(prompt: &str) -> String {
     let line = prompt

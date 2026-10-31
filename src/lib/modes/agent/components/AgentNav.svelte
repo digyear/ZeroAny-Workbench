@@ -8,11 +8,12 @@
   import { get } from 'svelte/store';
   import { AGENT_EVENT } from '$lib/shared/constants/events';
   import ConfirmDialog from '$lib/shared/primitives/ConfirmDialog.svelte';
-  import { agentAdoptDiscoveredSession, agentWorktreeIsDirty, agentSetSessionParent } from '../commands';
+  import { agentAdoptDiscoveredSession, agentWorktreeIsDirty, agentSetSessionParent, agentForkSession } from '../commands';
   import { PROVIDER_INSTALL_INFO, type AgentProvider } from '$lib/shared/agent/providers';
   import { showToast } from '$lib/shared/primitives/toast';
   import { friendlyError } from '$lib/utils/errors';
   import { orderForkTree, orderManagedForkTree, type ForkTreeRow } from '../forkTree';
+  import { getPurposeColor } from '../ai/prompt';
 
   interface Props {
     searchQuery?: string;
@@ -287,6 +288,14 @@
     return `${Math.floor(diff / 86400000)}d ago`;
   }
 
+  /** Row tooltip for fork children: name the session this one branched from. */
+  function forkTooltip(session: AgentSession): string {
+    const parentId = session.parentSessionId;
+    if (!parentId) return 'Forked session';
+    const parent = ($agentSessions as AgentSession[]).find((s) => s.id === parentId);
+    return parent ? `forked from ${parent.title}` : 'Forked session';
+  }
+
   function showSessionMenu(e: MouseEvent, session: AgentSession) {
     e.preventDefault();
     e.stopPropagation();
@@ -299,6 +308,25 @@
           window.dispatchEvent(new CustomEvent(AGENT_EVENT.EDIT_SESSION, { detail: { session } }));
         },
       },
+      // Native fork ("branch"): the new session inherits this conversation but
+      // diverges from here. Claude only — other providers have no fork flag.
+      ...(session.provider === 'claude'
+        ? [{
+            label: 'Branch',
+            icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="8" r="3"/><path d="M6 9v6M18 11c0 4-6 4-6 7"/></svg>',
+            action: async () => {
+              try {
+                const fork = await agentForkSession(session.id);
+                await loadAgentSessions();
+                addTab(fork.title, 'agent', fork.id, getPurposeColor(fork.purpose));
+                activeAgentSession.set(fork);
+                showToast('Branched — the new session inherits this conversation', 'success');
+              } catch (err) {
+                showToast(friendlyError(err), 'error');
+              }
+            },
+          }]
+        : []),
       {
         label: 'Reset Session',
         icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>',
@@ -441,7 +469,7 @@
             onclick={() => handleSelectSession(session)}
             oncontextmenu={(e) => showSessionMenu(e, session)}
           >
-            {#if depth > 0}<span class="session-fork-mark" title="Forked session">⑂</span>{/if}
+            {#if depth > 0}<span class="session-fork-mark" title={forkTooltip(session)}>⑂</span>{/if}
             <span class="session-icon">
               {#if awaiting}
                 <span class="awaiting-dot" title="Waiting for your input"></span>

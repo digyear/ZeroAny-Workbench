@@ -123,7 +123,7 @@ mod tests {
 
         // Quick Bar (migration 36): one-shot prompt + spawn lifecycle, and the
         // per-project preference table used by remembered defaults.
-        for column in ["initial_prompt", "spawn_state"] {
+        for column in ["initial_prompt", "spawn_state", "fork_kind"] {
             let count: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM pragma_table_info('agent_sessions') WHERE name = ?",
             )

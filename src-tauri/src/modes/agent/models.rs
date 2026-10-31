@@ -55,6 +55,9 @@ pub struct AgentSession {
     pub initial_prompt: Option<String>,
     /// Spawn lifecycle: `idle` | `starting` | `running` | `exited` | `failed`.
     pub spawn_state: String,
+    /// `"native"` when this row was created by ⋯ → Branch (provider-level
+    /// fork); `None` for normal sessions and for manual nesting.
+    pub fork_kind: Option<String>,
     /// Per-session override for the CLI binary location. `None`/empty
     /// = fall back to standard $PATH lookup. Set when the user has
     /// the agent installed somewhere `find_binary` can't reach — a

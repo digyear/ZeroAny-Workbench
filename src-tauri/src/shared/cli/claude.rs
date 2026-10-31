@@ -59,6 +59,11 @@ impl CliRunner for ClaudeRunner {
         let mut cmd = head;
         if let Some(ref sid) = opts.resume_session_id {
             cmd.push_str(&format!(" --resume \"{}\"", sid));
+            // Branch: start a NEW conversation seeded with that history
+            // instead of continuing the original in place.
+            if opts.fork_session {
+                cmd.push_str(" --fork-session");
+            }
         }
         if let Some(title) = opts
             .session_title
@@ -218,6 +223,7 @@ mod tests {
     fn session_title_becomes_name_flag() {
         let cmd = CLAUDE.build_spawn_command(&SpawnOpts {
             resume_session_id: None,
+            fork_session: false,
             system_prompt: None,
             session_title: Some("登陆中心".to_string()),
             skip_permissions: false,
@@ -233,6 +239,7 @@ mod tests {
     fn session_title_with_quotes_is_shell_escaped() {
         let cmd = CLAUDE.build_spawn_command(&SpawnOpts {
             resume_session_id: None,
+            fork_session: false,
             system_prompt: None,
             session_title: Some("don't break".to_string()),
             skip_permissions: false,
@@ -248,6 +255,7 @@ mod tests {
     fn blank_title_adds_no_flag() {
         let cmd = CLAUDE.build_spawn_command(&SpawnOpts {
             resume_session_id: None,
+            fork_session: false,
             system_prompt: None,
             session_title: Some("   ".to_string()),
             skip_permissions: false,
@@ -263,6 +271,7 @@ mod tests {
     fn title_and_resume_combine() {
         let cmd = CLAUDE.build_spawn_command(&SpawnOpts {
             resume_session_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+            fork_session: false,
             system_prompt: None,
             session_title: Some("MQ改造".to_string()),
             skip_permissions: false,
@@ -275,5 +284,31 @@ mod tests {
             cmd,
             "claude --resume \"11111111-2222-3333-4444-555555555555\" --name 'MQ改造'"
         );
+    }
+
+    #[test]
+    fn fork_session_adds_flag_after_resume() {
+        let cmd = CLAUDE.build_spawn_command(&SpawnOpts {
+            resume_session_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+            fork_session: true,
+            skip_permissions: false,
+            ..SpawnOpts::default()
+        });
+        assert_eq!(
+            cmd,
+            "claude --resume \"11111111-2222-3333-4444-555555555555\" --fork-session"
+        );
+    }
+
+    #[test]
+    fn fork_without_resume_is_ignored() {
+        // Nothing to fork from: a missing resume id must not emit a bare
+        // `--fork-session` (claude rejects it).
+        let cmd = CLAUDE.build_spawn_command(&SpawnOpts {
+            fork_session: true,
+            skip_permissions: false,
+            ..SpawnOpts::default()
+        });
+        assert_eq!(cmd, "claude");
     }
 }

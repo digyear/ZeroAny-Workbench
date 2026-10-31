@@ -1,0 +1,11 @@
+-- Native provider fork ("Branch" in the session ⋯ menu).
+--
+-- The fork row keeps `claude_session_id` NULL on purpose: the spawn path
+-- resumes the PARENT's conversation with `--resume <parent id>
+-- --fork-session`, and the capture poll then persists the forked
+-- conversation's own id on this row. Storing the parent id here instead
+-- would make every later reopen resume the parent's history.
+--
+-- `fork_kind` distinguishes a real fork from manual nesting (dragging one
+-- session under another also writes `parent_session_id`).
+ALTER TABLE agent_sessions ADD COLUMN fork_kind TEXT;

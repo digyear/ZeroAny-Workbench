@@ -526,6 +526,7 @@ pub fn run() {
             // Agent mode
             modes::agent::commands::agent_list_sessions,
             modes::agent::commands::agent_create_session,
+            modes::agent::commands::agent_fork_session,
             modes::agent::preferences::agent_get_project_preferences,
             modes::agent::preferences::agent_set_project_preferences,
             modes::agent::preferences::agent_get_preferences_scope,

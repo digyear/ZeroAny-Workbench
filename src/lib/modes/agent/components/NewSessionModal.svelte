@@ -32,36 +32,7 @@
   import { defaultBranchName, sessionTitleAfterProjectSelection } from '../branch-name';
   import { get } from 'svelte/store';
 
-  let {
-    show = $bindable(false),
-    // Quick Bar hand-off (product plan §5): project/prompt/worktree the user
-    // already typed stay filled in when they jump to the full form.
-    prefillProject = '',
-    prefillPrompt = '',
-    prefillWorktree = false,
-  } = $props();
-
-  let prefillApplied = $state(false);
-  // Re-arm the hand-off each time the modal closes, so a second Quick Bar →
-  // Advanced trip applies the new draft.
-  $effect(() => {
-    if (!show) prefillApplied = false;
-  });
-  $effect(() => {
-    if (!show || prefillApplied) return;
-    if (!prefillProject && !prefillPrompt) return;
-    if (prefillProject && !projectPath) {
-      projectPath = prefillProject;
-      title = sessionTitleAfterProjectSelection(title, prefillProject);
-      loadDiscoveredSessions(prefillProject);
-      void refreshProjectGit(prefillProject);
-    }
-    if (prefillPrompt && !title.trim()) {
-      title = prefillPrompt.trim().split('\n')[0].slice(0, 40);
-    }
-    if (prefillWorktree) worktreeEnabled = true;
-    prefillApplied = true;
-  });
+  let { show = $bindable(false) } = $props();
 
   // Form state — matches original Clauge exactly
   let projectPath = $state('');

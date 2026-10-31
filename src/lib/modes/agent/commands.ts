@@ -87,6 +87,11 @@ export const agentSetSessionParent = (id: string, parentId: string | null) => in
 export const agentSyncSessionTitle = (id: string) => invoke<void>('agent_sync_session_title', { id });
 export const agentUpdateLastUsed = (id: string) => invoke<void>('agent_update_last_used', { id });
 export const agentUpdateWorktree = (id: string, worktreePath: string | null, worktreeBranch: string | null) => invoke<void>('agent_update_worktree', { id, worktreePath, worktreeBranch });
+/** ⋯ → Branch: create a forked sibling of `sessionId` (Claude native
+ *  `--fork-session`). The first spawn of the returned row inherits the parent
+ *  conversation; files stay in the same working tree. */
+export const agentForkSession = (sessionId: string) =>
+  invoke<AgentSession>('agent_fork_session', { sessionId });
 export const agentListProfiles = (provider: string) =>
   invoke<string[]>('agent_list_profiles', { provider });
 
@@ -110,6 +115,9 @@ export const agentInjectPurpose = (projectPath: string, provider: string, purpos
 // Terminal
 export const agentSpawnTerminal = (params: {
   sessionId?: string;
+  /** ⋯ → Branch: resume `sessionId` with the provider's fork flag so a NEW
+   *  conversation inherits the history instead of continuing in place. */
+  forkSession?: boolean;
   /** Canonical session row id. Stamped as the terminal's session_ref so
    *  the mobile companion can match this live terminal to its row for
    *  every provider (codex/opencode produce no resume id). */

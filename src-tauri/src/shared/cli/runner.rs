@@ -29,6 +29,11 @@ use std::path::{Path, PathBuf};
 pub struct SpawnOpts {
     /// Existing session id to resume, if any.
     pub resume_session_id: Option<String>,
+    /// Fork instead of continuing in place (Claude `--fork-session`): the
+    /// provider starts a NEW conversation seeded with the resumed one's
+    /// history, leaving the original untouched. Requires a resume id;
+    /// runners without native fork support ignore it.
+    pub fork_session: bool,
     /// System prompt to append when starting / resuming.
     pub system_prompt: Option<String>,
     /// Workbench session title. Runners with a native session-name flag

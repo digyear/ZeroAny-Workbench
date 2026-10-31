@@ -1524,6 +1524,19 @@
       // "Resume existing session" picker in NewSessionModal.
       let resumeId = session.claudeSessionId || undefined;
 
+      // ⋯ → Branch rows carry no id of their own until their first spawn:
+      // resume the PARENT with the fork flag so Claude copies the history into
+      // a new conversation, and the capture poll below then persists the fork's
+      // own id on this row (which is why the row stays id-less here).
+      let forking = false;
+      if (!resumeId && session.forkKind === 'native' && session.parentSessionId) {
+        const parent = get(agentSessions).find((s) => s.id === session.parentSessionId);
+        if (parent?.claudeSessionId) {
+          resumeId = parent.claudeSessionId;
+          forking = true;
+        }
+      }
+
       // Compression-chain freshness check (Hermes). When the provider
       // compacted this conversation, the stored id points at an older
       // chain segment while a newer continuation exists. `hermes --resume`
@@ -1551,6 +1564,7 @@
       spawning = true;
       const termId = await agentSpawnTerminal({
         sessionId: resumeId,
+        forkSession: forking || undefined,
         rowId: session.id,
         projectPath: spawnPath,
         contextPrompt: purposePrompt || undefined,

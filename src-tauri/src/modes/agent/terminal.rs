@@ -47,6 +47,9 @@ pub async fn agent_spawn_terminal(
     state: State<'_, TerminalState>,
     pool: State<'_, SqlitePool>,
     session_id: Option<String>,
+    // ⋯ → Branch: spawn with the provider's fork flag so the resumed
+    // conversation is copied rather than continued in place.
+    fork_session: Option<bool>,
     // Canonical session row id. Used as the entry's `session_ref` so the
     // companion can match this live terminal to its row for ALL providers
     // (codex/opencode never produce a resume id, so `session_id` is null
@@ -81,6 +84,7 @@ pub async fn agent_spawn_terminal(
         pool.inner(),
         session_ref,
         session_id,
+        fork_session,
         project_path,
         context_prompt,
         skip_permissions,
@@ -106,6 +110,7 @@ pub(crate) async fn spawn_agent_terminal_impl(
     pool: &SqlitePool,
     session_ref: Option<String>,
     resume_session_id: Option<String>,
+    fork_session: Option<bool>,
     project_path: String,
     context_prompt: Option<String>,
     skip_permissions: Option<bool>,
@@ -178,6 +183,7 @@ pub(crate) async fn spawn_agent_terminal_impl(
 
     let spawn_cmd = cli.build_spawn_command(&SpawnOpts {
         resume_session_id: resume_session_id.clone(),
+        fork_session: fork_session.unwrap_or(false),
         system_prompt: context_prompt,
         session_title: session_row
             .as_ref()
