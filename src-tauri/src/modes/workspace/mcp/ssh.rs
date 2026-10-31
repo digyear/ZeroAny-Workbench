@@ -89,6 +89,13 @@ pub(super) async fn exec(pool: &SqlitePool, args: &Value) -> Result<Value, (i32,
         .filter(|s| !s.trim().is_empty())
         .ok_or((-32602, "command required".to_string()))?
         .to_string();
+    // `isolated` (default) opens its own channel; `shared` types into the
+    // user's open terminal so they can watch the command run.
+    let shared = args
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .map(|m| m.eq_ignore_ascii_case("shared"))
+        .unwrap_or(false);
     // Connect + auth + run share one budget: an MFA prompt can legitimately
     // eat most of it, and a long build should be able to ask for more.
     let timeout_secs = args
@@ -114,6 +121,32 @@ pub(super) async fn exec(pool: &SqlitePool, args: &Value) -> Result<Value, (i32,
     check_command(scope, &command).map_err(|e| (-32603, e))?;
 
     crate::telemetry::bump("mcp.ssh_exec");
+
+    if shared {
+        return match tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            crate::modes::ssh::live::run_shared(&profile_id, &command, Duration::from_secs(timeout_secs)),
+        )
+        .await
+        {
+            Ok(Some(Ok(mut value))) => {
+                value["profileId"] = json!(profile_id);
+                Ok(value)
+            }
+            Ok(Some(Err(e))) => Err((-32603, e)),
+            Ok(None) => Err((
+                -32603,
+                format!(
+                    "shared mode needs an open SSH terminal for `{}` — open the connection in the app first, or use mode `isolated`",
+                    profile_id
+                ),
+            )),
+            Err(_) => Err((
+                -32603,
+                format!("shared command timed out after {}s", timeout_secs),
+            )),
+        };
+    }
 
     match tokio::time::timeout(
         Duration::from_secs(timeout_secs),
@@ -307,7 +340,7 @@ async fn exec_via_shell(
 /// text between the markers and the exit code printed after the end marker.
 /// Everything before the first begin marker (banner, prompt, the echoed
 /// command line) is discarded.
-fn split_sentinel_output(text: &str, begin: &str, end: &str) -> Option<(String, u32)> {
+pub(crate) fn split_sentinel_output(text: &str, begin: &str, end: &str) -> Option<(String, u32)> {
     // The PTY echoes the command we sent, and that echo *contains* both
     // marker literals (inside `printf '\n…\n'`). Require a real newline on
     // both sides of each marker so only the emitted lines match, never the
@@ -318,7 +351,8 @@ fn split_sentinel_output(text: &str, begin: &str, end: &str) -> Option<(String, 
     let rest = &text[start..];
     let close = format!("\n{} ", end);
     let stop = rest.find(&close)?;
-    let body = rest[..stop].to_string();
+    // The newline that separates the payload from the end marker is ours.
+    let body = rest[..stop].trim_end_matches('\n').to_string();
     let tail = &rest[stop + close.len()..];
     let code = tail
         .split_whitespace()
@@ -331,7 +365,7 @@ fn split_sentinel_output(text: &str, begin: &str, end: &str) -> Option<(String, 
 /// Append up to the cap, remembering whether anything was dropped. We keep
 /// draining the channel after hitting the cap so the remote process is not
 /// left blocked on a full window.
-fn push_capped(buf: &mut Vec<u8>, data: &[u8], truncated: &mut bool) {
+pub(crate) fn push_capped(buf: &mut Vec<u8>, data: &[u8], truncated: &mut bool) {
     let room = MAX_OUTPUT_BYTES.saturating_sub(buf.len());
     if room == 0 {
         *truncated = true;

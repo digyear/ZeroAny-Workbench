@@ -41,6 +41,7 @@ pub(crate) async fn spawn_ssh_terminal_impl(
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel::<SshCommand>();
 
     let tid_for_task = terminal_id.clone();
+    let cmd_tx_for_task = cmd_tx.clone();
     let on_output_for_task = on_output.clone();
 
     // Clone the pool handle for the spawned task — SqlitePool is
@@ -68,6 +69,7 @@ pub(crate) async fn spawn_ssh_terminal_impl(
             tid_for_task.clone(),
             on_output_for_task.clone(),
             cmd_rx,
+            cmd_tx_for_task,
         )
         .await
         {
@@ -158,6 +160,7 @@ async fn run_ssh_session(
     terminal_id: String,
     on_output: Option<Channel<TerminalOutputPayload>>,
     mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<SshCommand>,
+    cmd_tx: tokio::sync::mpsc::UnboundedSender<SshCommand>,
 ) -> Result<(), String> {
     // Connect + auth via the shared helper. Returns a post-auth Handle that
     // we layer the PTY + shell on top of.
@@ -180,6 +183,9 @@ async fn run_ssh_session(
     // own auth — the only way in on a host that wants a one-time code. The
     // guard drops at the end of this session, closing the connection with it.
     let _live = crate::modes::ssh::live::attach(profile_id, handle);
+    // Shared ("borrow") mode types into THIS shell; the guard removes the
+    // link when the terminal ends.
+    let _shell = crate::modes::ssh::live::attach_shell(profile_id, &terminal_id, cmd_tx);
 
     // Single-task select loop: forward inbound channel msgs to the frontend
     // and outbound commands to the channel. Exiting either branch tears the

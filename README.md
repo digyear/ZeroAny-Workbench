@@ -201,7 +201,9 @@ A free-form spatial workspace where every open tab becomes a draggable window. P
 
 ## MCP
 
-ZeroAny Workbench ships an MCP server with **45+ tools** — `boards_*`, `cards_*`, `notes_*`, `rest_collection_*`, `coworkers_*`, `workspace_*`, `activity_feed`, `cards_call_coworker` (so the agent in your terminal can `@-mention` a coworker on a card without leaving the shell), and `ssh_profiles_list` / `ssh_exec` (so the same agent can run a command on any host you've saved in the SSH mode — key, agent or password auth, jump hosts included). The server **auto-starts on launch** — no flag, no extra setup. Any MCP-speaking client can drive your workspace and your servers.
+ZeroAny Workbench ships an MCP server with **45+ tools** — `boards_*`, `cards_*`, `notes_*`, `rest_collection_*`, `coworkers_*`, `workspace_*`, `activity_feed`, `cards_call_coworker` (so the agent in your terminal can `@-mention` a coworker on a card without leaving the shell), and `ssh_profiles_list` / `ssh_exec` (so the same agent can run a command on the hosts you expose from the SSH mode — key, agent or password auth, jump hosts included). The server **auto-starts on launch** — no flag, no extra setup. Any MCP-speaking client can drive your workspace and your servers.
+
+Commands run on the connection you already authenticated whenever one is live (that is the only way in on a host behind a one-time code), and `ssh_exec` takes a `mode`: `isolated` (default — its own channel, nothing appears in your terminal) or `shared` (types into your open SSH terminal, so you watch the agent work).
 
 SSH is shared **per connection and off by default**. **Settings → MCP** lists every saved host with a switch and a scope: **read-only** (logs, service status, file reads), **service control** (plus start / stop / restart / reload), or **full shell**. Every command an agent sends is checked against that scope before it leaves the app, and a refused command comes back with what *is* allowed, so the agent can correct itself instead of guessing. The grant table is resource-kind agnostic — database connections will reuse the same control.
 

@@ -239,3 +239,206 @@ async fn worker(
     }
     log::info!(target: "ssh::auth", "live session closed for {}", profile_id);
 }
+
+// ── Shared (borrow) mode ───────────────────────────────────────────────────
+// Some hosts only work over a shell, and sometimes the user *wants* to watch
+// what the agent runs. Both are served by typing the command into the
+// terminal session the user already has open, with the output captured from
+// the same fan-out the UI reads.
+
+struct ShellLink {
+    terminal_id: String,
+    tx: mpsc::UnboundedSender<crate::modes::ssh::models::SshCommand>,
+}
+
+fn shells() -> &'static Mutex<HashMap<String, ShellLink>> {
+    static SHELLS: OnceLock<Mutex<HashMap<String, ShellLink>>> = OnceLock::new();
+    SHELLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// One shared command at a time: two injections into the same terminal would
+/// interleave their sentinels and nobody could tell whose output was whose.
+static SHARED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Ties a shell link to the terminal session that owns it.
+pub struct ShellGuard {
+    profile_id: String,
+    terminal_id: String,
+}
+
+impl Drop for ShellGuard {
+    fn drop(&mut self) {
+        let mut map = shells().lock().unwrap();
+        if map
+            .get(&self.profile_id)
+            .map(|l| l.terminal_id == self.terminal_id)
+            == Some(true)
+        {
+            map.remove(&self.profile_id);
+        }
+    }
+}
+
+/// Publish the terminal's shell channel for shared-mode commands.
+pub fn attach_shell(
+    profile_id: &str,
+    terminal_id: &str,
+    tx: mpsc::UnboundedSender<crate::modes::ssh::models::SshCommand>,
+) -> ShellGuard {
+    shells().lock().unwrap().insert(
+        profile_id.to_string(),
+        ShellLink {
+            terminal_id: terminal_id.to_string(),
+            tx,
+        },
+    );
+    ShellGuard {
+        profile_id: profile_id.to_string(),
+        terminal_id: terminal_id.to_string(),
+    }
+}
+
+pub fn has_shell(profile_id: &str) -> bool {
+    shells().lock().unwrap().contains_key(profile_id)
+}
+
+/// Run `command` inside the user's terminal session: the command line and its
+/// output are visible there, and the result is captured in parallel.
+/// `None` = no terminal is open for this profile.
+pub async fn run_shared(
+    profile_id: &str,
+    command: &str,
+    timeout: Duration,
+) -> Option<Result<Value, String>> {
+    let (terminal_id, tx) = {
+        let map = shells().lock().unwrap();
+        let link = map.get(profile_id)?;
+        (link.terminal_id.clone(), link.tx.clone())
+    };
+    // Subscribe BEFORE typing, so no early output can be missed.
+    let mut attached = crate::companion::fanout::attach(&terminal_id)?;
+
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let begin = format!("__ZA_B_{}__", tag);
+    let end = format!("__ZA_E_{}__", tag);
+    let script = format!(
+        "printf '\\n{0}\\n'; {1}\nprintf '\\n{2} %s\\n' \"$?\"\n",
+        begin, command, end
+    );
+
+    let _serial = SHARED_LOCK.lock().await;
+    if tx
+        .send(crate::modes::ssh::models::SshCommand::Write(
+            script.into_bytes(),
+        ))
+        .is_err()
+    {
+        return None;
+    }
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return Some(Err(format!(
+                "shared command still running after {}s",
+                timeout.as_secs()
+            )));
+        }
+        match tokio::time::timeout(left, attached.rx.recv()).await {
+            Ok(Ok(crate::companion::fanout::FanoutEvent::Out(bytes))) => {
+                crate::modes::workspace::mcp::push_capped(&mut buf, &bytes, &mut truncated);
+                if String::from_utf8_lossy(&buf).contains(&end) {
+                    // Let the exit status (printed after the end marker) land.
+                    let grace = tokio::time::Instant::now() + Duration::from_millis(250);
+                    while tokio::time::Instant::now() < grace {
+                        match tokio::time::timeout(
+                            Duration::from_millis(50),
+                            attached.rx.recv(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(crate::companion::fanout::FanoutEvent::Out(bytes))) => {
+                                crate::modes::workspace::mcp::push_capped(
+                                    &mut buf,
+                                    &bytes,
+                                    &mut truncated,
+                                )
+                            }
+                            Ok(Ok(_)) => {}
+                            _ => break,
+                        }
+                    }
+                    break;
+                }
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+
+    let text = String::from_utf8_lossy(&buf).to_string();
+    let (body, exit_code) = crate::modes::workspace::mcp::split_sentinel_output(&text, &begin, &end)?;
+    Some(Ok(json!({
+        "command": command,
+        "stdout": body,
+        "stderr": "",
+        "exitCode": exit_code,
+        "truncated": truncated,
+        "mode": "shared",
+    })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::companion::fanout;
+    use crate::modes::ssh::models::SshCommand;
+
+    /// The shared path is pure plumbing: type into the terminal's channel,
+    /// read the terminal's fan-out. A fake terminal lets us check that
+    /// without SSH — including the PTY echo, which contains the markers.
+    #[tokio::test]
+    async fn shared_mode_types_into_the_terminal_and_captures_output() {
+        let profile = format!("shared-test-{}", uuid::Uuid::new_v4().simple());
+        let terminal_id = format!("term-{}", uuid::Uuid::new_v4().simple());
+        fanout::register(&terminal_id, fanout::TermKind::Ssh, "test");
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<SshCommand>();
+        let tid = terminal_id.clone();
+        let fake_shell = tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                let SshCommand::Write(bytes) = cmd else { continue };
+                let script = String::from_utf8_lossy(&bytes).to_string();
+                // PTY echo first — it contains both marker literals.
+                fanout::publish(&tid, script.as_bytes());
+                let tag_start = script.find("__ZA_B_").expect("begin marker") + "__ZA_B_".len();
+                let tag_end = script[tag_start..].find("__").expect("tag end") + tag_start;
+                let tag = &script[tag_start..tag_end];
+                fanout::publish(&tid, format!("\r\n__ZA_B_{}__\r\n", tag).as_bytes());
+                fanout::publish(&tid, b"Linux fakebox 6.1\r\n");
+                fanout::publish(&tid, format!("\r\n__ZA_E_{}__ 0\r\n", tag).as_bytes());
+            }
+        });
+
+        let guard = attach_shell(&profile, &terminal_id, tx);
+        let result = run_shared(&profile, "uname -a", Duration::from_secs(5))
+            .await
+            .expect("a shell is attached")
+            .expect("the fake shell answers");
+        assert_eq!(result["mode"], serde_json::json!("shared"));
+        assert_eq!(result["exitCode"], serde_json::json!(0));
+        assert_eq!(result["stdout"], serde_json::json!("Linux fakebox 6.1"));
+
+        drop(guard);
+        assert!(!has_shell(&profile), "guard must remove the link");
+        assert!(
+            run_shared(&profile, "uname -a", Duration::from_secs(1)).await.is_none(),
+            "with no terminal open shared mode has nowhere to type"
+        );
+        fake_shell.abort();
+        fanout::unregister(&terminal_id);
+    }
+}

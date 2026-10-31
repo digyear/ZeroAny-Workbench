@@ -799,7 +799,7 @@ fn ssh_schemas() -> Vec<Value> {
         json!(
         {
             "name": "ssh_profiles_list",
-            "description": "List the SSH hosts saved in the app (name, host, port, username, auth type, jump host). Secrets are never returned. Use this to turn \"the staging box\" into the `profileId` that `ssh_exec` needs.",
+            "description": "List the SSH hosts the user has exposed to MCP, with the scope each one is limited to (read_only / service_control / full) and its jump host. Only exposed hosts appear — a connection the user has not shared is invisible here. Secrets are never returned. Use this to turn \"the staging box\" into the `profileId` that `ssh_exec` needs.",
             "inputSchema": {
                 "type": "object",
                 "properties": {},
@@ -810,13 +810,14 @@ fn ssh_schemas() -> Vec<Value> {
         json!(
         {
             "name": "ssh_exec",
-            "description": "Run one shell command on a saved SSH host and return its stdout, stderr and exit code. Each call dials a fresh connection (key / agent / password per the profile, including jump hosts and ProxyCommand), runs the command with `sh -c`, drains the output and disconnects — there is no persistent shell, so `cd` and exported variables do not carry over between calls. Output is capped at 128 KiB per stream (see `truncated`). Profiles that need a one-time code make the app pop its auth prompt; answer it there and the call continues.",
+            "description": "Run one shell command on a saved SSH host and return its stdout, stderr and exit code. Commands run on the connection the user already authenticated when one is live (`via: live-session`), so hosts behind a one-time-code bastion work without asking for the code again; otherwise a fresh connection is dialled and the call fails fast if the host wants an interactive challenge. Every command is checked against the host's MCP scope first — read-only hosts allow log/status reads, service-control adds start/stop/restart, full allows anything — and a refusal lists what is allowed. Two transports: `isolated` (default) opens its own channel, so nothing appears in the user's terminal; `shared` types into the user's open SSH terminal, so the user watches the command and its output. Commands do not share a shell between calls (`cd` and exported variables do not carry over) — use one compound command with `&&` instead. Output is capped at 128 KiB (see `truncated`).",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "profileId": { "type": "string", "description": "Target host — an id from `ssh_profiles_list`." },
                     "command": { "type": "string", "description": "Shell command to run on the remote host (executed with `sh -c`)." },
-                    "timeoutSecs": { "type": "integer", "description": "Budget for connect + auth + execution, in seconds. Default 60, clamped to 5..600. Raise it for long builds; a timeout closes the connection." }
+                    "timeoutSecs": { "type": "integer", "description": "Budget for connect + auth + execution, in seconds. Default 60, clamped to 5..600. Raise it for long builds; a timeout closes the connection." },
+                    "mode": { "type": "string", "enum": ["isolated", "shared"], "description": "`isolated` (default) runs on its own channel — invisible to the user. `shared` types the command into the user's open SSH terminal so they can watch it; requires that terminal to be open." }
                 },
                 "required": ["profileId", "command"]
             }

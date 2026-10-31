@@ -30,4 +30,4 @@ pub use server::{start, McpHandle};
 /// against a fixture session.
 // Handle-level exec: used by the live-session worker (MCP on a reused
 // connection) and by the SSH fixture tests.
-pub(crate) use ssh::exec_on_handle;
+pub(crate) use ssh::{exec_on_handle, push_capped, split_sentinel_output};
