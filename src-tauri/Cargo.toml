@@ -55,7 +55,7 @@ flate2 = "1"
 hex = "0.4"
 tauri-plugin-notification = "2"
 # SSH client (pure-Rust, cross-platform)
-russh = "0.46"
+russh = "0.65"
 async-trait = "0.1"
 async-stream = "0.3"
 sha2 = "0.10"
@@ -166,9 +166,3 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 [dev-dependencies]
 # WAV reader for the transcription smoke test (shared/transcribe/engine.rs).
 hound = "3.5"
-
-# Local fork until the channel-keepalive fix is released upstream:
-# bastions (JumpServer/koko) treat a CHANNEL_* reply to their
-# keepalive@openssh.com poll as a protocol error and drop the session.
-[patch.crates-io]
-russh = { git = "https://github.com/digyear/russh", branch = "fix/ignore-channel-keepalive" }

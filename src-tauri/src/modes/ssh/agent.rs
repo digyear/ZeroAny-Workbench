@@ -79,16 +79,18 @@ where
         return Err("ssh-agent has no keys loaded — run `ssh-add` first".to_string());
     }
 
-    for pubkey in identities {
-        let (returned_agent, result) = handle
-            .authenticate_future(username, pubkey, agent)
-            .await;
-        agent = returned_agent;
-        match result {
-            Ok(true) => return Ok(true),
+    for identity in identities {
+        let pubkey = identity.public_key().into_owned();
+        // The agent keeps the private material; `AgentClient` implements
+        // `auth::Signer`, so the handle delegates each signature back to it.
+        match handle
+            .authenticate_publickey_with(username, pubkey, None, &mut agent)
+            .await
+        {
+            Ok(result) if result.success() => return Ok(true),
             // The server didn't accept this key — try the next one. Most
             // OpenSSH configs only authorize one or two of a user's keys.
-            Ok(false) => continue,
+            Ok(_) => continue,
             Err(e) => return Err(format!("agent auth attempt: {}", e)),
         }
     }
