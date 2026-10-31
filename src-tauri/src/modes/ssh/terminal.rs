@@ -161,7 +161,7 @@ async fn run_ssh_session(
 ) -> Result<(), String> {
     // Connect + auth via the shared helper. Returns a post-auth Handle that
     // we layer the PTY + shell on top of.
-    let handle: Handle<ClientHandler> = open_authenticated_ssh_session(pool, profile_id).await?;
+    let handle: Handle<ClientHandler> = open_authenticated_ssh_session(pool, profile_id, true).await?;
 
     // Open a session channel and request an interactive shell over a PTY.
     let mut chan = handle

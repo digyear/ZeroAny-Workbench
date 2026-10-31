@@ -50,7 +50,7 @@ async fn open_backend(
     match conn.kind.as_str() {
         "sftp" => {
             let handle = if let Some(profile_id) = conn.ssh_profile_id.as_ref() {
-                crate::modes::ssh::ssh_session::open_authenticated_ssh_session(pool, profile_id)
+                crate::modes::ssh::ssh_session::open_authenticated_ssh_session(pool, profile_id, true)
                     .await?
             } else {
                 // Direct credentials: build the SshAuthSpec from the
@@ -90,6 +90,7 @@ async fn open_backend(
                     auth_type,
                     key_path: conn.key_path.clone(),
                     secret,
+                    interactive: true,
                 };
                 crate::modes::ssh::ssh_session::open_authenticated_ssh_session_with_spec(spec)
                     .await?

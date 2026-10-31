@@ -81,6 +81,11 @@ pub struct SshAuthSpec {
     /// Password (auth_type=password) or passphrase (auth_type=key). None
     /// is fine for unencrypted keys / agent auth.
     pub secret: Option<String>,
+    /// Whether an unanswered challenge (OTP / password prompt) may be handed
+    /// to a human through the app's prompt modal. Terminal, tunnels and
+    /// Explorer set `true`; MCP calls set `false` — an agent call has nobody
+    /// to answer, and blocking until the timeout is worse than a clear error.
+    pub interactive: bool,
 }
 
 /// Trait alias for "anything russh can speak SSH over". Concrete types:
@@ -103,6 +108,7 @@ type BoxedTransport = Box<dyn Transport>;
 pub async fn open_authenticated_ssh_session(
     pool: &SqlitePool,
     profile_id: &str,
+    interactive: bool,
 ) -> Result<Handle<ClientHandler>, String> {
     // 1. Walk the jump chain. Start at the destination, follow
     // jump_profile_id pointers until we hit a profile with no jump set.
@@ -211,6 +217,7 @@ pub async fn open_authenticated_ssh_session(
             auth_type: profile.auth_type.clone(),
             key_path: profile.key_path.clone(),
             secret,
+            interactive,
         };
         prev_handle = Some(perform_ssh_handshake_and_auth(transport, &spec).await?);
     }
@@ -293,6 +300,13 @@ async fn ssh_connect_stream(
     }
 }
 
+/// True when the error is the "this call cannot answer a challenge" refusal,
+/// which must reach the caller instead of being swallowed into a generic
+/// "authentication failed" (that is what an agent gets, and it is useless).
+fn is_challenge_refusal(error: &str) -> bool {
+    error.contains("interactive challenge")
+}
+
 /// Second-factor pass on a FRESH connection: nothing but
 /// keyboard-interactive, so the OTP round is armed correctly (see
 /// `NEED_KBI_RETRY`).
@@ -303,7 +317,12 @@ async fn perform_ssh_kbi_auth(
     let mut handle = ssh_connect_stream(transport).await?;
     let authed = match tokio::time::timeout(
         std::time::Duration::from_secs(150),
-        try_keyboard_interactive_with_ui(&mut handle, &spec.username, spec.secret.as_deref()),
+        try_keyboard_interactive_with_ui(
+            &mut handle,
+            &spec.username,
+            spec.secret.as_deref(),
+            spec.interactive,
+        ),
     )
     .await
     {
@@ -407,7 +426,7 @@ async fn run_auth(
                 // server answers by offering `keyboard-interactive` for the
                 // second. Without this fallback such hosts just reported
                 // "authentication failed" and the user never saw a code field.
-                try_keyboard_interactive_fallback(handle, &spec.username, None).await
+                try_keyboard_interactive_fallback(handle, &spec.username, None, spec.interactive).await?
             }
         }
         "password" => {
@@ -430,12 +449,16 @@ async fn run_auth(
                 handle,
                 &spec.username,
                 spec.secret.as_deref(),
+                spec.interactive,
             )
             .await;
             match first {
                 Ok(true) => true,
                 other => {
                     if let Err(error) = &other {
+                        if is_challenge_refusal(error) {
+                            return Err(error.clone());
+                        }
                         log::debug!(
                             target: "ssh::auth",
                             "keyboard-interactive (first try) unavailable: {}",
@@ -467,11 +490,15 @@ async fn run_auth(
                             handle,
                             &spec.username,
                             spec.secret.as_deref(),
+                            spec.interactive,
                         )
                         .await
                         {
                             Ok(ok) => ok,
                             Err(error) => {
+                                if is_challenge_refusal(&error) {
+                                    return Err(error);
+                                }
                                 log::debug!(
                                     target: "ssh::auth",
                                     "keyboard-interactive (second factor) unavailable: {}",
@@ -490,7 +517,7 @@ async fn run_auth(
             } else {
                 // Agent + OTP: same story as key auth — the agent proves the
                 // first factor, keyboard-interactive carries the code.
-                try_keyboard_interactive_fallback(handle, &spec.username, None).await
+                try_keyboard_interactive_fallback(handle, &spec.username, None, spec.interactive).await?
             }
         }
         "interactive" => {
@@ -507,7 +534,13 @@ async fn run_auth(
             // text), we pre-fill that one prompt with the stored secret
             // and only show the modal for subsequent rounds. Saves one
             // typing step for the most common 2-step setup.
-            try_keyboard_interactive_with_ui(handle, &spec.username, spec.secret.as_deref()).await?
+            try_keyboard_interactive_with_ui(
+                handle,
+                &spec.username,
+                spec.secret.as_deref(),
+                spec.interactive,
+            )
+            .await?
         }
         other => return Err(format!("unknown auth_type: {}", other)),
     })
@@ -546,16 +579,20 @@ async fn try_keyboard_interactive_fallback(
     handle: &mut russh::client::Handle<ClientHandler>,
     username: &str,
     pre_stored_secret: Option<&str>,
-) -> bool {
-    match try_keyboard_interactive_with_ui(handle, username, pre_stored_secret).await {
-        Ok(ok) => ok,
+    interactive: bool,
+) -> Result<bool, String> {
+    match try_keyboard_interactive_with_ui(handle, username, pre_stored_secret, interactive).await {
+        Ok(ok) => Ok(ok),
         Err(error) => {
+            if is_challenge_refusal(&error) {
+                return Err(error);
+            }
             log::debug!(
                 target: "ssh::auth",
                 "keyboard-interactive fallback unavailable: {}",
                 error
             );
-            false
+            Ok(false)
         }
     }
 }
@@ -568,6 +605,7 @@ async fn try_keyboard_interactive_with_ui(
     handle: &mut russh::client::Handle<ClientHandler>,
     username: &str,
     pre_stored_secret: Option<&str>,
+    interactive: bool,
 ) -> Result<bool, String> {
     use russh::client::KeyboardInteractiveAuthResponse;
 
@@ -578,7 +616,9 @@ async fn try_keyboard_interactive_with_ui(
     #[cfg(not(debug_assertions))]
     let scripted = false;
 
-    let ui: Option<(&AppHandle, tauri::State<'_, PendingAuthPrompts>)> = if scripted {
+    let ui: Option<(&AppHandle, tauri::State<'_, PendingAuthPrompts>)> = if scripted || !interactive {
+        // A non-interactive caller (MCP) has nobody to answer: don't even
+        // resolve an AppHandle — the prompt round turns into a refusal below.
         None
     } else {
         let app = app_handle().ok_or_else(|| {
@@ -632,6 +672,20 @@ async fn try_keyboard_interactive_with_ui(
                     Vec::new()
                 } else if is_first_password_round && pre_stored_secret.is_some() {
                     vec![pre_stored_secret.unwrap().to_string()]
+                } else if !interactive {
+                    // Nobody can answer this call: refuse with the prompt
+                    // names instead of leaving a modal dangling until the
+                    // caller's timeout expires.
+                    let wanted = prompts
+                        .iter()
+                        .map(|p| p.prompt.trim().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Err(format!(
+                        "host needs an interactive challenge ({}) — an agent call cannot answer \
+                         it. Connect from the SSH panel so a human can, or use an account without MFA.",
+                        wanted
+                    ));
                 } else {
                     match &ui {
                         Some((app, pending)) => {
@@ -1149,12 +1203,59 @@ mod mfa_ladder_tests {
             auth_type: "password".to_string(),
             key_path: None,
             secret: Some("pw1".to_string()),
+            interactive: true,
         };
 
         let handle = open_authenticated_ssh_session_with_spec(spec)
             .await
             .expect("auth must succeed once the OTP is supplied");
         drop(handle);
+    }
+
+    /// A non-interactive caller (MCP) must not dangle on an OTP prompt it
+    /// cannot answer: it gets a refusal naming the challenge, immediately,
+    /// instead of waiting out the exec timeout with a modal left open in
+    /// the UI.
+    #[tokio::test]
+    #[ignore = "spawns python3 + paramiko to emulate a password+OTP bastion"]
+    async fn non_interactive_auth_refuses_the_otp_round() {
+        let _serial = SERIAL.lock().await;
+        init_logger();
+        let Some(fixture) = start_fixture() else {
+            panic!("fixture unavailable — needs python3 with paramiko");
+        };
+
+        let spec = SshAuthSpec {
+            host: "127.0.0.1".to_string(),
+            port: fixture.port,
+            username: "test".to_string(),
+            auth_type: "password".to_string(),
+            key_path: None,
+            secret: Some("pw1".to_string()),
+            interactive: false,
+        };
+
+        let started = std::time::Instant::now();
+        let error = match open_authenticated_ssh_session_with_spec(spec).await {
+            Ok(_) => panic!("an unanswered OTP round must fail, not block"),
+            Err(e) => e,
+        };
+        let elapsed = started.elapsed();
+        assert!(
+            error.contains("interactive challenge"),
+            "unexpected error: {}",
+            error
+        );
+        assert!(
+            error.contains("OTP") || error.to_lowercase().contains("code"),
+            "the refusal should name the challenge: {}",
+            error
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "refusal took {:?} — it should fail fast",
+            elapsed
+        );
     }
 
     /// The MCP `ssh_exec` path: exec a command on an authenticated session
@@ -1177,6 +1278,7 @@ mod mfa_ladder_tests {
             auth_type: "password".to_string(),
             key_path: None,
             secret: Some("pw1".to_string()),
+            interactive: true,
         };
         let handle = open_authenticated_ssh_session_with_spec(spec)
             .await

@@ -62,7 +62,7 @@ pub async fn open(
 ) -> Result<SshTunnel, String> {
     // 1. Connect + auth via the shared helper (DB lookup, credential
     // pull, TCP+NODELAY, russh handshake, auth dispatch — all there).
-    let handle = open_authenticated_ssh_session(pool, profile_id).await?;
+    let handle = open_authenticated_ssh_session(pool, profile_id, true).await?;
     let handle = Arc::new(handle);
 
     // 4. Bind a local listener on a kernel-chosen free port.
