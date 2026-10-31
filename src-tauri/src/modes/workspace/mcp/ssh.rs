@@ -19,10 +19,12 @@
 use std::time::Duration;
 
 use russh::ChannelMsg;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sqlx::SqlitePool;
 
+use crate::modes::ssh::policy::{SshScope, check_command};
 use crate::modes::ssh::ssh_session::open_authenticated_ssh_session;
+use crate::shared::repos::mcp_grants::{self, KIND_SSH};
 
 /// Cap on how much of a command's output we hand back. Agents read these
 /// bytes into their context, so a careless `cat /var/log/syslog` must not
@@ -34,28 +36,43 @@ pub(super) async fn profiles_list(pool: &SqlitePool) -> Result<Value, (i32, Stri
     let profiles = crate::shared::repos::ssh_profiles::list_all(pool)
         .await
         .map_err(|e| (-32603, format!("DB error: {}", e)))?;
+    // Only hosts the user explicitly exposed to MCP, each carrying the scope
+    // it was exposed at. A profile with no grant row simply isn't listed.
+    let grants = mcp_grants::list_for_kind(pool, KIND_SSH)
+        .await
+        .map_err(|e| (-32603, format!("DB error: {}", e)))?;
 
-    let count = profiles.len();
-    let rows: Vec<Value> = profiles
-        .into_iter()
-        .map(|p| {
-            json!({
-                "profileId": p.id,
-                // Camel-cased for the same reason `name` is: the agent
-                // prompt / docs speak in camelCase everywhere else.
-                "name": p.name,
-                "host": p.host,
-                "port": p.port,
-                "username": p.username,
-                "authType": p.auth_type,
-                "lastUsedAt": p.last_used_at,
-                "jumpProfileId": p.jump_profile_id,
-                "proxyCommand": p.proxy_command,
-            })
-        })
-        .collect();
+    let mut rows: Vec<Value> = Vec::new();
+    for p in profiles {
+        let Some(grant) = grants.iter().find(|g| g.enabled && g.resource_id == p.id) else {
+            continue;
+        };
+        let scope = SshScope::parse(&grant.scope);
+        rows.push(json!({
+            "profileId": p.id,
+            "name": p.name,
+            "host": p.host,
+            "port": p.port,
+            "username": p.username,
+            "authType": p.auth_type,
+            "lastUsedAt": p.last_used_at,
+            "jumpProfileId": p.jump_profile_id,
+            "proxyCommand": p.proxy_command,
+            "scope": scope.as_str(),
+            "scopeSummary": scope.summary(),
+        }));
+    }
 
-    Ok(json!({ "profiles": rows, "count": count }))
+    let count = rows.len();
+    Ok(json!({
+        "profiles": rows,
+        "count": count,
+        "note": if count == 0 {
+            "No SSH host is exposed to MCP yet — enable one in the app's SSH panel (MCP access)."
+        } else {
+            "Commands are checked against each host's MCP scope before they run."
+        },
+    }))
 }
 
 /// `ssh_exec` — run one command on one saved profile.
@@ -79,6 +96,22 @@ pub(super) async fn exec(pool: &SqlitePool, args: &Value) -> Result<Value, (i32,
         .and_then(|v| v.as_u64())
         .unwrap_or(60)
         .clamp(5, 600);
+
+    // Exposure + scope are checked before anything touches the network: no
+    // grant row means the profile was never shared with MCP.
+    let grant = mcp_grants::get(pool, KIND_SSH, &profile_id)
+        .await
+        .map_err(|e| (-32603, format!("DB error: {}", e)))?
+        .filter(|g| g.enabled)
+        .ok_or((
+            -32603,
+            format!(
+                "profile `{}` is not exposed to MCP — enable it in the app's SSH panel",
+                profile_id
+            ),
+        ))?;
+    let scope = SshScope::parse(&grant.scope);
+    check_command(scope, &command).map_err(|e| (-32603, e))?;
 
     crate::telemetry::bump("mcp.ssh_exec");
 
@@ -105,11 +138,7 @@ pub(super) async fn exec(pool: &SqlitePool, args: &Value) -> Result<Value, (i32,
 }
 
 /// Dial, exec, drop the connection.
-async fn run_command(
-    pool: &SqlitePool,
-    profile_id: &str,
-    command: &str,
-) -> Result<Value, String> {
+async fn run_command(pool: &SqlitePool, profile_id: &str, command: &str) -> Result<Value, String> {
     let handle = open_authenticated_ssh_session(pool, profile_id).await?;
     let result = exec_on_handle(&handle, command).await;
     // Best effort: the server closes on its own if this fails.

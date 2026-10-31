@@ -169,6 +169,14 @@ pub async fn ssh_delete_profile(
 ) -> Result<(), String> {
     // Best-effort: clear credential first. Failures here shouldn't block row deletion.
     let _ = credential_store().delete(&id).await;
+    // Drop the MCP grant too — otherwise a deleted connection keeps a row
+    // that would re-expose a *new* profile if the id ever got reused.
+    let _ = crate::shared::repos::mcp_grants::delete(
+        pool.inner(),
+        crate::shared::repos::mcp_grants::KIND_SSH,
+        &id,
+    )
+    .await;
     ssh_profiles_repo::delete_by_id(pool.inner(), &id)
         .await
         .map_err(|e| e.to_string())?;

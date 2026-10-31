@@ -610,6 +610,8 @@ pub fn run() {
             modes::agent::commands::agent_validate_binary,
             // SSH mode
             modes::ssh::profiles::ssh_list_profiles,
+            commands::mcp_grants::mcp_grants_list,
+            commands::mcp_grants::mcp_grant_set,
             modes::ssh::profiles::ssh_create_profile,
             modes::ssh::profiles::ssh_update_profile,
             modes::ssh::profiles::ssh_delete_profile,

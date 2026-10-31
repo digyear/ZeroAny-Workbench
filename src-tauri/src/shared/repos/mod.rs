@@ -5,6 +5,7 @@ pub mod discovered_sessions;
 pub mod environments;
 pub mod explorer;
 pub mod history;
+pub mod mcp_grants;
 pub mod nosql_connections;
 pub mod requests;
 pub mod sessions;

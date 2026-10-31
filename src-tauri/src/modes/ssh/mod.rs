@@ -11,6 +11,7 @@ pub mod agent;
 pub mod ai_tools;
 pub mod config_import;
 pub mod models;
+pub mod policy;
 pub mod profiles;
 pub mod ssh_session;
 pub mod terminal;
