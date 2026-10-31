@@ -15,28 +15,56 @@ import type {
 
 // Session CRUD
 export const agentListSessions = () => invoke<AgentSession[]>('agent_list_sessions');
-export const agentCreateSession = (params: {
-  title: string;
-  purpose: string;
-  projectPath: string;
+
+/** Overrides for `agentCreateSession`. Every field is optional: `undefined`
+ *  means "use the project's remembered default, then the global default". */
+export interface SessionOptions {
+  title?: string;
+  purpose?: string;
   skipPermissions?: boolean;
   customPrompt?: string;
   gitName?: string;
   gitEmail?: string;
-  /** 'claude' | 'codex' | 'opencode'. Omit for Claude default. */
+  /** 'claude' | 'codex' | 'gemini' | 'opencode' | 'hermes'. */
   provider?: string;
-  /** Absolute path to the CLI binary (when the user picked one in the
-   *  Advanced section). Omit / empty string = use $PATH lookup. */
   binaryPath?: string;
-  /** Provider-native profile. Currently supported by Hermes. */
   profile?: string;
-  /** Project-root branch/ref used as the starting point for the worktree. */
   baseBranch?: string;
-  /** User-editable branch created for this session. */
   branchName?: string;
-  /** Create an isolated worktree for a fresh session in a Git repository. */
+  /** Isolate in a new git worktree. Backend default is FALSE (Quick Bar). */
   worktreeEnabled?: boolean;
-}) => invoke<AgentSession>('agent_create_session', params);
+  /** Context set names attached at creation time. */
+  contextNames?: string[];
+}
+
+/** Create a session. `prompt` is the one-shot first message: the backend
+ *  stores it and types it into the CLI once, on the first spawn. */
+export const agentCreateSession = (
+  projectPath: string,
+  prompt?: string,
+  options: SessionOptions = {},
+) => invoke<AgentSession>('agent_create_session', { projectPath, prompt, options });
+
+/** Remembered per-project defaults (provider / purpose / branch / contexts…). */
+export interface ProjectPreferences {
+  provider?: string;
+  profile?: string;
+  purpose?: string;
+  baseBranch?: string;
+  worktreeEnabled?: boolean;
+  contextNames?: string[];
+  gitName?: string;
+  gitEmail?: string;
+  skipPermissions?: boolean;
+}
+export const agentGetProjectPreferences = (projectPath: string) =>
+  invoke<ProjectPreferences | null>('agent_get_project_preferences', { projectPath });
+export const agentSetProjectPreferences = (projectPath: string, preferences: ProjectPreferences) =>
+  invoke<void>('agent_set_project_preferences', { projectPath, preferences });
+/** 'project_root' (default) | 'worktree' — granularity of the memory above. */
+export const agentGetPreferencesScope = () => invoke<string>('agent_get_preferences_scope');
+export const agentSetPreferencesScope = (scope: string) =>
+  invoke<void>('agent_set_preferences_scope', { scope });
 export const agentUpdateSession = (params: {
   id: string;
   title?: string;

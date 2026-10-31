@@ -50,6 +50,11 @@ pub struct AgentSession {
     /// `"opencode"`. Migration 13 added the column with a default of
     /// `"claude"`, so every pre-multi-CLI row still resolves correctly.
     pub provider: String,
+    /// One-shot first message captured by the Quick Bar. Sent once by the
+    /// spawn path, then cleared so reopening the tab never re-sends it.
+    pub initial_prompt: Option<String>,
+    /// Spawn lifecycle: `idle` | `starting` | `running` | `exited` | `failed`.
+    pub spawn_state: String,
     /// Per-session override for the CLI binary location. `None`/empty
     /// = fall back to standard $PATH lookup. Set when the user has
     /// the agent installed somewhere `find_binary` can't reach — a

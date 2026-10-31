@@ -121,6 +121,27 @@ mod tests {
         .unwrap();
         assert_eq!(discovered_profile_count, 1);
 
+        // Quick Bar (migration 36): one-shot prompt + spawn lifecycle, and the
+        // per-project preference table used by remembered defaults.
+        for column in ["initial_prompt", "spawn_state"] {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_sessions') WHERE name = ?",
+            )
+            .bind(column)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(count, 1, "agent_sessions.{column} missing");
+        }
+        let pref_table: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type = 'table' AND name = 'agent_project_preferences'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pref_table, 1);
+
         // Provider-native ids are only unique inside a Hermes profile.
         // The catalog must preserve both rows so each can be resumed from
         // its owning state.db.

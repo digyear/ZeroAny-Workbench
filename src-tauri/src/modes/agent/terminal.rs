@@ -313,7 +313,18 @@ pub(crate) async fn spawn_agent_terminal_impl(
         log::debug!(target: "agent::terminal", "agent spawn provider={provider}; codex MCP token injection skipped");
     }
 
-    let child = pty_pair.slave.spawn_command(cmd).map_err(|e| format!("Failed to spawn {}: {}", cli.id(), e))?;
+    let child = match pty_pair.slave.spawn_command(cmd) {
+        Ok(child) => child,
+        Err(e) => {
+            if let Some(id) = session_ref.as_deref() {
+                let _ = crate::shared::repos::sessions::update_session_spawn_state(
+                    pool, id, "failed",
+                )
+                .await;
+            }
+            return Err(format!("Failed to spawn {}: {}", cli.id(), e));
+        }
+    };
     // Spawn succeeded — now safe to tail codex's session log.
     if let Some(log_path) = codex_log_path {
         crate::modes::agent::hooks::start_codex_log_watcher(terminal_id.clone(), log_path);
@@ -332,6 +343,8 @@ pub(crate) async fn spawn_agent_terminal_impl(
     fanout::register(&terminal_id, fanout::TermKind::Agent, &fanout_title);
 
     let tid_clone = terminal_id.clone();
+    let pool_for_exit = pool.clone();
+    let ref_for_exit = session_ref.clone();
     std::thread::spawn(move || {
         let mut reader = reader;
         let mut buf = [0u8; 4096];
@@ -354,12 +367,69 @@ pub(crate) async fn spawn_agent_terminal_impl(
         // Tear down the codex log watcher + temp log (no-op for other
         // providers / when no watcher is registered).
         crate::modes::agent::hooks::stop_codex_watcher(&tid_clone);
+        if let Some(id) = ref_for_exit {
+            let pool = pool_for_exit;
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::shared::repos::sessions::update_session_spawn_state(
+                    &pool, &id, "exited",
+                )
+                .await;
+            });
+        }
         if let Some(ch) = &on_output {
             let _ = ch.send(TerminalOutputPayload { terminal_id: tid_clone.clone(), data: String::new(), exit: Some(true) });
         }
     });
 
-    state.terminals.lock().insert(terminal_id.clone(), TerminalEntry { master: pty_pair.master, writer, child, session_ref });
+    state.terminals.lock().insert(terminal_id.clone(), TerminalEntry { master: pty_pair.master, writer, child, session_ref: session_ref.clone() });
+
+    // Spawn lifecycle: the row is live from here on (Quick Bar rows show
+    // `starting` until the first spawn, `running` after).
+    if let Some(id) = session_ref.as_deref() {
+        let _ =
+            crate::shared::repos::sessions::update_session_spawn_state(pool, id, "running").await;
+    }
+
+    // Quick Bar one-shot prompt: type the captured first message once the TUI
+    // has drawn its prompt, then clear it so reopening the tab never re-sends
+    // it. Resume spawns skip this — the conversation already has its history.
+    if resume_session_id.is_none() {
+        if let (Some(row_id), Some(initial)) = (
+            session_ref.clone(),
+            session_row
+                .as_ref()
+                .and_then(|row| row.initial_prompt.clone()),
+        ) {
+            let initial = initial.trim().to_string();
+            if !initial.is_empty() {
+                let terminals = state.terminals.clone();
+                let tid = terminal_id.clone();
+                let pool_clone = pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    // Input is buffered by the PTY, so a slightly early write
+                    // is safe; this delay only avoids splitting the TUI's
+                    // first render.
+                    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                    {
+                        let mut guard = terminals.lock();
+                        if let Some(entry) = guard.get_mut(&tid) {
+                            let mut payload = initial;
+                            payload.push('\r');
+                            let _ = entry.writer.write_all(payload.as_bytes());
+                            let _ = entry.writer.flush();
+                        }
+                    }
+                    let _ = crate::shared::repos::sessions::update_session_initial_prompt(
+                        &pool_clone,
+                        &row_id,
+                        None,
+                    )
+                    .await;
+                });
+            }
+        }
+    }
+
     Ok(terminal_id)
 }
 

@@ -50,47 +50,118 @@ pub async fn agent_list_sessions(pool: State<'_, SqlitePool>) -> Result<Vec<Agen
     Ok(sessions)
 }
 
+/// Optional overrides for `agent_create_session`. Every field is optional:
+/// `None` means "use the project's remembered default, then the global
+/// default". This is the shape the Quick Bar sends (usually just a prompt)
+/// and the shape the Advanced modal sends (everything explicit).
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionOptions {
+    pub title: Option<String>,
+    pub purpose: Option<String>,
+    pub skip_permissions: Option<bool>,
+    pub custom_prompt: Option<String>,
+    pub git_name: Option<String>,
+    pub git_email: Option<String>,
+    pub provider: Option<String>,
+    pub binary_path: Option<String>,
+    pub profile: Option<String>,
+    pub base_branch: Option<String>,
+    pub branch_name: Option<String>,
+    pub worktree_enabled: Option<bool>,
+    /// Context set names attached at creation time.
+    pub context_names: Option<Vec<String>>,
+}
+
 #[tauri::command]
 pub async fn agent_create_session(
     pool: State<'_, SqlitePool>,
-    title: String, purpose: String, project_path: String,
-    skip_permissions: Option<bool>, custom_prompt: Option<String>,
-    git_name: Option<String>, git_email: Option<String>,
-    provider: Option<String>,
-    binary_path: Option<String>,
-    profile: Option<String>,
-    base_branch: Option<String>,
-    branch_name: Option<String>,
-    worktree_enabled: Option<bool>,
+    project_path: String,
+    prompt: Option<String>,
+    options: Option<SessionOptions>,
 ) -> Result<AgentSession, String> {
     let project_path = project_path.trim().to_string();
     let identity_path = project_path.clone();
     let identity = tokio::task::spawn_blocking(move || resolve_project_identity(&identity_path))
         .await
         .map_err(|error| format!("Project identity resolution failed: {error}"))?;
+
+    let requested = options.unwrap_or_default();
+    // Remembered defaults: project root (or worktree) → global defaults.
+    // A failure here must never block session creation.
+    let remembered = crate::modes::agent::preferences::load(pool.inner(), &project_path)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+
+    let initial_prompt = prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string);
+
+    // Title: explicit → first line of the prompt → generic.
+    let title = requested
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            initial_prompt
+                .as_deref()
+                .map(|p| crate::modes::agent::commands::title_from_prompt(p))
+        })
+        .unwrap_or_else(|| "New session".to_string());
+
+    // Purpose: explicit → remembered → Development.
+    let purpose = requested
+        .purpose
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .or_else(|| remembered.purpose.clone())
+        .unwrap_or_else(|| "Development".to_string());
+
     let id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
-    let context_prompt = custom_prompt.unwrap_or_default();
-    // Default to Claude when the frontend doesn't pass a provider —
-    // preserves behaviour for legacy callers; unknown ids also fall
-    // back via `runner_for`. The string is persisted as-is so future
-    // providers slot in without a column change.
-    let provider = provider
-        .filter(|p| !p.trim().is_empty())
+    let context_prompt = requested
+        .custom_prompt
+        .clone()
+        .unwrap_or_else(|| SessionOptions::purpose_prompt_fallback(&purpose));
+    // Default to Claude when nothing was chosen; unknown ids fall back via
+    // `runner_for`. The string is persisted as-is so future providers slot in
+    // without a column change.
+    let provider = requested
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .or_else(|| remembered.provider.clone())
         .unwrap_or_else(|| "claude".to_string());
-    let skip = if skip_permissions.unwrap_or(false) {
+    let skip = if requested
+        .skip_permissions
+        .or(remembered.skip_permissions)
+        .unwrap_or(false)
+    {
         1
     } else {
         0
     };
-    let bin = binary_path
+    let bin = requested
+        .binary_path
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let profile = profile
+    let profile = requested
+        .profile
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .or(remembered.profile.as_deref());
     if profile.is_some() && provider != "hermes" {
         return Err(format!("Provider '{provider}' does not support profiles"));
     }
@@ -100,6 +171,14 @@ pub async fn agent_create_session(
             return Err(format!("Hermes profile '{selected}' does not exist"));
         }
     }
+    // Decision D1: worktree isolation is OFF unless the caller asked for it.
+    // Remembered preferences are intentionally NOT allowed to flip the global
+    // default off→on, otherwise one manual toggle would stick forever.
+    let worktree_enabled = requested.worktree_enabled.unwrap_or(false);
+    let base_branch = requested
+        .base_branch
+        .as_deref()
+        .or(remembered.base_branch.as_deref());
     sessions_repo::insert_session(
         pool.inner(),
         &id,
@@ -110,19 +189,62 @@ pub async fn agent_create_session(
         &identity.project_name,
         &context_prompt,
         skip,
-        git_name.as_deref(),
-        git_email.as_deref(),
+        requested.git_name.as_deref().or(remembered.git_name.as_deref()),
+        requested.git_email.as_deref().or(remembered.git_email.as_deref()),
         &now,
         &now,
         &provider,
         bin,
         profile,
-        if identity.is_linked_worktree { None } else { base_branch.as_deref() },
-        if identity.is_linked_worktree { None } else { branch_name.as_deref() },
-        if worktree_enabled.unwrap_or(true) && !identity.is_linked_worktree { 1 } else { 0 },
+        if identity.is_linked_worktree { None } else { base_branch },
+        if identity.is_linked_worktree { None } else { requested.branch_name.as_deref() },
+        if worktree_enabled && !identity.is_linked_worktree { 1 } else { 0 },
     )
     .await
     .map_err(|e| e.to_string())?;
+
+    if let Some(text) = initial_prompt.as_deref() {
+        sessions_repo::update_session_initial_prompt(pool.inner(), &id, Some(text))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Attach remembered/explicit context sets by name. Unknown names are
+    // skipped — a context deleted on another machine must not block creation.
+    if let Some(names) = requested
+        .context_names
+        .clone()
+        .or_else(|| remembered.context_names.clone())
+    {
+        if !names.is_empty() {
+            if let Ok(contexts) = sessions_repo::list_contexts(pool.inner()).await {
+                for name in names {
+                    if let Some(ctx) = contexts.iter().find(|c| c.name == name) {
+                        let _ =
+                            sessions_repo::attach_context_to_session(pool.inner(), &id, &ctx.id)
+                                .await;
+                    }
+                }
+            }
+        }
+    }
+
+    // Persist what the caller explicitly chose (never derived defaults).
+    let explicit = crate::modes::agent::preferences::ProjectPreferences {
+        provider: requested.provider.clone(),
+        profile: requested.profile.clone(),
+        purpose: requested.purpose.clone(),
+        base_branch: requested.base_branch.clone(),
+        worktree_enabled: requested.worktree_enabled,
+        context_names: requested.context_names.clone(),
+        git_name: requested.git_name.clone(),
+        git_email: requested.git_email.clone(),
+        skip_permissions: requested.skip_permissions,
+    };
+    if !explicit.is_empty() {
+        let _ = crate::modes::agent::preferences::save(pool.inner(), &project_path, &explicit).await;
+    }
+
     // Sessions are machine-local — only agent_contexts travel through
     // cloud sync, so no `bump("agent")` here.
 
@@ -138,6 +260,32 @@ pub async fn agent_create_session(
     ).await;
 
     sessions_repo::get_session_by_id(pool.inner(), &id).await.map_err(|e| e.to_string())
+}
+
+/// First 40 chars of the first non-empty line — the Quick Bar title default.
+pub fn title_from_prompt(prompt: &str) -> String {
+    let line = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("New session");
+    let mut title: String = line.chars().take(40).collect();
+    if line.chars().count() > 40 {
+        title.push('…');
+    }
+    title
+}
+
+impl SessionOptions {
+    /// Purpose text is normally supplied by the frontend from
+    /// `SESSION_PURPOSES`; this keeps CLI/Quick-Bar callers (which only send a
+    /// purpose id) from landing with an empty context prompt.
+    fn purpose_prompt_fallback(purpose: &str) -> String {
+        match purpose {
+            "Custom" => String::new(),
+            other => format!("You are working in a ZeroAny Workbench {other} session."),
+        }
+    }
 }
 
 #[tauri::command]

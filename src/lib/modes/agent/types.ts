@@ -25,6 +25,10 @@ export interface AgentSession {
   cardId: string | null;
   /** 'claude' | 'codex' | 'gemini' | 'opencode' | 'hermes'. */
   provider: string;
+  /** One-shot first message captured by the Quick Bar (sent once, then null). */
+  initialPrompt: string | null;
+  /** Spawn lifecycle: 'idle' | 'starting' | 'running' | 'exited' | 'failed'. */
+  spawnState: string;
   /** Per-session override of the CLI binary location. null/empty =
    *  fall back to the standard $PATH lookup. Used when the user has
    *  the agent installed somewhere `find_binary` can't reach. */

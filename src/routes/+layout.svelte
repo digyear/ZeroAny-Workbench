@@ -25,6 +25,7 @@
     } from "$lib/modes/agent/stores";
     import { getPurposeColor } from "$lib/modes/agent/ai/prompt";
     import NewSessionModal from "$lib/modes/agent/components/NewSessionModal.svelte";
+    import QuickStart from "$lib/modes/agent/components/QuickStart.svelte";
     import EditSessionModal from "$lib/modes/agent/components/EditSessionModal.svelte";
     import UsageDashboard from "$lib/modes/agent/components/UsageDashboard.svelte";
     import NewWorkspaceModal from "$lib/modes/workspace/components/NewWorkspaceModal.svelte";
@@ -186,6 +187,13 @@
     let lastDispatchedToken = "";
 
     let showNewSessionModal = $state(false);
+    // Quick Bar (product plan §5): the default way to start a session.
+    let showQuickStart = $state(false);
+    let newSessionPrefill = $state<{ projectPath: string; prompt: string; worktree: boolean }>({
+        projectPath: "",
+        prompt: "",
+        worktree: false,
+    });
     let showEditSessionModal = $state(false);
     let showUsageDashboard = $state(false);
     let showNewWorkspaceModal = $state(false);
@@ -238,6 +246,16 @@
     }
 
     function handleAgentNewSession() {
+        showQuickStart = true;
+    }
+
+    /** Quick Bar → Advanced: carry the draft into the full modal. */
+    function handleQuickStartAdvanced(draft: {
+        projectPath: string;
+        prompt: string;
+        worktree: boolean;
+    }) {
+        newSessionPrefill = draft;
         showNewSessionModal = true;
     }
 
@@ -737,6 +755,18 @@
             handleSaveNewRequest,
         );
         window.addEventListener(AGENT_EVENT.NEW_SESSION, handleAgentNewSession);
+        // ⌘N / Ctrl+N — Quick Bar: one line in, Enter, session running.
+        window.addEventListener("keydown", (e: KeyboardEvent) => {
+            if (
+                (e.metaKey || e.ctrlKey) &&
+                !e.shiftKey &&
+                !e.altKey &&
+                e.key.toLowerCase() === "n"
+            ) {
+                e.preventDefault();
+                showQuickStart = true;
+            }
+        });
         window.addEventListener(
             AGENT_EVENT.EDIT_SESSION,
             handleAgentEditSession,
@@ -1427,7 +1457,13 @@
     onsave={handleNoSqlConnectionSave}
     onclose={() => editingNoSqlConnection.set(null)}
 />
-<NewSessionModal bind:show={showNewSessionModal} />
+<QuickStart bind:show={showQuickStart} onAdvanced={handleQuickStartAdvanced} />
+<NewSessionModal
+    bind:show={showNewSessionModal}
+    prefillProject={newSessionPrefill.projectPath}
+    prefillPrompt={newSessionPrefill.prompt}
+    prefillWorktree={newSessionPrefill.worktree}
+/>
 <NewWorkspaceModal
     bind:show={showNewWorkspaceModal}
     editing={editingWorkspace}

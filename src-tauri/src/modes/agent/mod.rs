@@ -17,6 +17,7 @@ pub mod git;
 pub mod hooks;
 pub mod models;
 pub mod plugins;
+pub mod preferences;
 pub mod terminal;
 pub mod usage;
 pub mod worktree;

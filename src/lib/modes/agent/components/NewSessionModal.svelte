@@ -32,7 +32,36 @@
   import { defaultBranchName, sessionTitleAfterProjectSelection } from '../branch-name';
   import { get } from 'svelte/store';
 
-  let { show = $bindable(false) } = $props();
+  let {
+    show = $bindable(false),
+    // Quick Bar hand-off (product plan §5): project/prompt/worktree the user
+    // already typed stay filled in when they jump to the full form.
+    prefillProject = '',
+    prefillPrompt = '',
+    prefillWorktree = false,
+  } = $props();
+
+  let prefillApplied = $state(false);
+  // Re-arm the hand-off each time the modal closes, so a second Quick Bar →
+  // Advanced trip applies the new draft.
+  $effect(() => {
+    if (!show) prefillApplied = false;
+  });
+  $effect(() => {
+    if (!show || prefillApplied) return;
+    if (!prefillProject && !prefillPrompt) return;
+    if (prefillProject && !projectPath) {
+      projectPath = prefillProject;
+      title = sessionTitleAfterProjectSelection(title, prefillProject);
+      loadDiscoveredSessions(prefillProject);
+      void refreshProjectGit(prefillProject);
+    }
+    if (prefillPrompt && !title.trim()) {
+      title = prefillPrompt.trim().split('\n')[0].slice(0, 40);
+    }
+    if (prefillWorktree) worktreeEnabled = true;
+    prefillApplied = true;
+  });
 
   // Form state — matches original Clauge exactly
   let projectPath = $state('');
@@ -42,7 +71,7 @@
   let baseBranch = $state('');
   let branchName = $state('');
   let branchNameEdited = $state(false);
-  let worktreeEnabled = $state(true);
+  let worktreeEnabled = $state(false);
   // Which CLI backs this session. Defaults to the footer-selected provider
   // (whichever the user last looked at usage for) so the typical
   // "open another session in the same CLI" flow is one click. Coerced to
@@ -276,10 +305,9 @@
         await agentValidateWorktreeBranch(projectPath.trim(), selectedBranchName);
       }
 
-      const session = await agentCreateSession({
+      const session = await agentCreateSession(projectPath.trim(), undefined, {
         title: title.trim(),
         purpose,
-        projectPath: projectPath.trim(),
         skipPermissions: skipPermissions || undefined,
         customPrompt: purpose === 'Custom'
           ? (customPrompt.trim() || undefined)
@@ -338,7 +366,7 @@
 
   function resetForm() {
     projectPath = ''; title = ''; purpose = ''; skipPermissions = false;
-    isGitProject = false; baseBranch = ''; branchName = ''; branchNameEdited = false; worktreeEnabled = true;
+    isGitProject = false; baseBranch = ''; branchName = ''; branchNameEdited = false; worktreeEnabled = false;
     customPrompt = ''; gitEnabled = false; gitName = ''; gitEmail = '';
     discoveredSessions = []; selectedSessionId = '';
     contextEnabled = false; attachedContextNames = []; showContextDropdown = false;

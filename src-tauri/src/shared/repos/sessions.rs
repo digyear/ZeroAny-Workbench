@@ -253,6 +253,35 @@ pub async fn update_session_context_prompt(
     Ok(())
 }
 
+/// One-shot first message captured by the Quick Bar. Written at creation,
+/// consumed once by the spawn path, then cleared (`None`).
+pub async fn update_session_initial_prompt(
+    pool: &SqlitePool,
+    id: &str,
+    prompt: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE agent_sessions SET initial_prompt = ? WHERE id = ?")
+        .bind(prompt)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Spawn lifecycle for the session row: idle | starting | running | exited | failed.
+pub async fn update_session_spawn_state(
+    pool: &SqlitePool,
+    id: &str,
+    state: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE agent_sessions SET spawn_state = ? WHERE id = ?")
+        .bind(state)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Sessions that would render nested under `id` in the left nav: manual
 /// children (`parent_session_id`) plus auto fork-lineage children whose
 /// `parent_external_session_id` matches this session's resume id and that
