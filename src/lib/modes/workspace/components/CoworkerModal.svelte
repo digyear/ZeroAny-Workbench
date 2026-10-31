@@ -21,7 +21,7 @@
   import { showToast } from '$lib/shared/primitives/toast';
   import { errorToast, friendlyError } from '$lib/utils/errors';
   import CoworkerAvatar from './CoworkerAvatar.svelte';
-  import { cloudPlan, upgradeModalOpen } from '$lib/stores/cloud';
+  import { cloudPlan } from '$lib/stores/cloud';
   import {
     providerStatus,
     providerStatusReady,
@@ -53,7 +53,6 @@
   let profileProbeId = 0;
   let saving = $state(false);
   let confirmingDelete = $state(false);
-  let showProRequired = $state(false);
   let showProviderNotInstalled = $state(false);
 
   const PROVIDER_OPTIONS = [
@@ -113,7 +112,6 @@
       provider     = initialProvider;
       profile      = existing?.profile ?? '';
       confirmingDelete = false;
-      showProRequired = false;
       if (initialProvider === 'hermes') void loadHermesProfiles();
     }
   });
@@ -145,14 +143,6 @@
 
   async function save() {
     if (!canSave) return;
-    if (!isEdit && $cloudPlan !== 'pro') {
-      const all = await workspaceCoworkerList();
-      const activeCount = all.filter((c) => c.disabledAt == null).length;
-      if (activeCount >= 3) {
-        showProRequired = true;
-        return;
-      }
-    }
     // Pre-flight: surface the install guide here rather than at first
     // run when the coworker is actually invoked.
     if ($providerStatusReady && !$providerStatus[provider as AgentProvider]) {
@@ -358,16 +348,6 @@
         {/if}
       </div>
 
-      {#if showProRequired}
-        <div class="cm-pro-gate">
-          <span class="cm-pro-gate-text">Free plan supports up to 3 coworkers.</span>
-          <button
-            class="cm-btn-primary"
-            onclick={() => { upgradeModalOpen.set(true); showProRequired = false; show = false; }}
-          >Upgrade to Pro</button>
-          <button class="cm-btn-secondary" onclick={() => (showProRequired = false)}>Cancel</button>
-        </div>
-      {:else}
       <div class="cm-foot">
         {#if isEdit}
           {#if confirmingDelete}
@@ -384,7 +364,6 @@
           {saving ? 'Saving…' : isEdit ? 'Save' : 'Create coworker'}
         </button>
       </div>
-      {/if}
     </div>
   </div>
 {/if}
@@ -614,20 +593,6 @@
   .cm-confirm-text {
     font-family: var(--ui);
     font-size: 11.5px;
-    color: var(--t2);
-  }
-  .cm-pro-gate {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 12px 18px;
-    border-top: 1px solid var(--b1);
-    background: color-mix(in srgb, var(--acc) 6%, transparent);
-  }
-  .cm-pro-gate-text {
-    flex: 1;
-    font-family: var(--ui);
-    font-size: 12px;
     color: var(--t2);
   }
 </style>

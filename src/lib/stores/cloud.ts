@@ -123,7 +123,7 @@ export const activeProvider = writable<Provider | null>(null);
 export const welcomeProModalOpen = writable<boolean>(false);
 
 /** Transient hint set by the post-checkout deep-link (`?plan=monthly|yearly|
- *  lifetime`). The WelcomeProModal prefers `cloudSub.interval` when available,
+ *  lifetime`).
  *  but if the Polar `order.paid` webhook hasn't reached our worker yet the
  *  modal opens with this URL hint so the user still sees "Pro Monthly" /
  *  "Pro Yearly" / "Pro Lifetime" — not the generic "Pro" fallback. Cleared
@@ -131,7 +131,7 @@ export const welcomeProModalOpen = writable<boolean>(false);
 export const welcomeProPlanHint = writable<'monthly' | 'yearly' | 'lifetime' | null>(null);
 
 /** True while the post-checkout deep-link handler is polling /api/auth/me for
- *  the Polar webhook to land. WelcomeProModal renders a "Activating Pro …"
+ *  the Polar webhook to land.
  *  loading state when this is true and the celebration state once false. */
 export const postCheckoutVerifying = writable<boolean>(false);
 

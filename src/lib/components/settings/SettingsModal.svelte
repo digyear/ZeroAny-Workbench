@@ -1,6 +1,5 @@
 <script lang="ts">
     import ConfirmDialog from "$lib/shared/primitives/ConfirmDialog.svelte";
-    import ClaugeAIBalance from "$lib/components/settings/ClaugeAIBalance.svelte";
     import { invoke } from "@tauri-apps/api/core";
     import { cloudPlan, cloudSub, upgradeModalOpen } from "$lib/stores/cloud";
     import MobileTabContent from "$lib/components/settings/MobileTabContent.svelte";
@@ -881,10 +880,6 @@
         } catch {
             cloudCreditsLocal = null;
         }
-    }
-
-    function handleUpgradeClick() {
-        upgradeModalOpen.set(true);
     }
 
     // --- Appearance ---
@@ -2614,17 +2609,7 @@
                     </div>
 
                     {#if aiTopTab === "clauge"}
-                        {#if $cloudPlan !== "pro"}
-                            <!-- Free user: upsell card lives here, full data
-                                 panels only appear after upgrade. -->
-                            <ClaugeAIBalance
-                                plan={$cloudPlan ?? "free"}
-                                credits={cloudCreditsLocal}
-                                subscription={cloudSubLocal}
-                                onUpgradeClick={handleUpgradeClick}
-                            />
-                        {:else}
-                            {@const remaining =
+                                                    {@const remaining =
                                 cloudCreditsLocal?.remaining ?? 0}
                             {@const allowance =
                                 cloudCreditsLocal?.allowance ?? 0}
@@ -2900,7 +2885,6 @@
                                     {/if}
                                 </section>
                             </div>
-                        {/if}
                     {:else if aiTopTab === "byok"}
                         <!-- AI sub-tabs -->
                         <div class="ai-subtabs">

@@ -17,8 +17,6 @@
     import Toast from "$lib/shared/primitives/Toast.svelte";
     import ContextMenu from "$lib/shared/primitives/ContextMenu.svelte";
     import EnvManagerModal from "$lib/components/env/EnvManagerModal.svelte";
-    import UpgradeModal from "$lib/components/cloud/UpgradeModal.svelte";
-    import WelcomeProModal from "$lib/components/cloud/WelcomeProModal.svelte";
     import {
         loadAgentSessions,
         loadAgentContexts,
@@ -85,10 +83,6 @@
         proState,
         cloudPlan,
         cloudSub,
-        upgradeModalOpen,
-        welcomeProModalOpen,
-        welcomeProPlanHint,
-        postCheckoutVerifying,
         hasSyncedOnce,
     } from "$lib/stores/cloud";
     import {
@@ -941,54 +935,6 @@
 
             // True iff the live subscription matches the tier the user just
             // purchased. Drives the post-checkout poll's exit condition.
-            function statusMatchesHint(
-                hint: "monthly" | "yearly" | "lifetime" | null,
-                state: {
-                    plan: string;
-                    hasSub: boolean;
-                    interval: string | null;
-                    isLifetime: boolean;
-                },
-            ): boolean {
-                if (state.plan !== "pro") return false;
-                if (!state.hasSub) return false;
-                if (hint === "lifetime") return state.isLifetime;
-                if (hint === "monthly")
-                    return !state.isLifetime && state.interval === "monthly";
-                if (hint === "yearly")
-                    return !state.isLifetime && state.interval === "yearly";
-                // No hint — any Pro subscription is acceptable.
-                return true;
-            }
-
-            // Poll /api/auth/me until the webhook has updated D1 (or we time
-            // out). Backoff is tight up front since webhooks usually land in
-            // ~1-3s, then widens. Total budget ~20s. While polling,
-            // `postCheckoutVerifying` is true so the WelcomeProModal shows a
-            // loading state and disables close.
-            async function pollPostCheckoutStatus(
-                hint: "monthly" | "yearly" | "lifetime" | null,
-            ): Promise<void> {
-                const delays = [500, 1000, 1500, 2000, 2500, 3500, 4500, 5000];
-                // Immediate first attempt (no wait) — webhook may already be done.
-                let state = await applyCloudStatus();
-                if (statusMatchesHint(hint, state)) {
-                    postCheckoutVerifying.set(false);
-                    return;
-                }
-                for (const ms of delays) {
-                    await new Promise((r) => setTimeout(r, ms));
-                    state = await applyCloudStatus();
-                    if (statusMatchesHint(hint, state)) {
-                        postCheckoutVerifying.set(false);
-                        return;
-                    }
-                }
-                // Timed out. Drop the verifying flag so the celebration UI
-                // shows anyway — the user did pay, AccountTab refresh on
-                // next mount will eventually catch up.
-                postCheckoutVerifying.set(false);
-            }
 
             async function dispatchDeepLink(urls: string[]) {
                 for (const url of urls) {
@@ -1015,59 +961,10 @@
                         }
 
                         if (u.hostname === "upgrade") {
-                            // Don't show the UpgradeModal to a Pro user —
-                            // every in-app entry point already gates on
-                            // !isPro, but the deep-link is the one path
-                            // that bypassed that gate. Pro users get sent
-                            // to Settings → Account so they can manage
-                            // their existing subscription instead.
-                            if (get(cloudPlan) === "pro") {
-                                openSettingsTab("account");
-                            } else {
-                                upgradeModalOpen.set(true);
-                            }
+                            // Upgrade surfaces are gone; nothing to open.
                             continue;
                         }
 
-                        if (u.hostname === "checkout-success") {
-                            // Stash the URL-hint tier first so the modal's
-                            // loading + celebration content can use it
-                            // independently of cloudSub being fresh.
-                            const planParam = u.searchParams.get("plan");
-                            const hint:
-                                | "monthly"
-                                | "yearly"
-                                | "lifetime"
-                                | null =
-                                planParam === "monthly" ||
-                                planParam === "yearly" ||
-                                planParam === "lifetime"
-                                    ? planParam
-                                    : null;
-                            if (hint) welcomeProPlanHint.set(hint);
-
-                            // Open the modal immediately in "Verifying" state
-                            // so the user never sees stale free UI / a
-                            // GetPro CTA flash between Polar redirect and
-                            // webhook delivery.
-                            upgradeModalOpen.set(false);
-                            postCheckoutVerifying.set(true);
-                            welcomeProModalOpen.set(true);
-
-                            // Poll until cloudSub reflects the purchased tier
-                            // (webhook landed), then drop the verifying flag
-                            // so the modal swaps to celebration content.
-                            // Background-runs; user can't dismiss while
-                            // verifying (WelcomeProModal disables close).
-                            pollPostCheckoutStatus(hint).catch((e) => {
-                                console.warn(
-                                    "[post-checkout] poll failed",
-                                    e,
-                                );
-                                postCheckoutVerifying.set(false);
-                            });
-                            continue;
-                        }
                     } catch {
                         console.warn("deep link parse failed:", url);
                     }
@@ -1427,8 +1324,6 @@
     bind:session={editSessionTarget}
 />
 <UsageDashboard bind:show={showUsageDashboard} />
-<UpgradeModal />
-<WelcomeProModal />
 <DeviceSetupModal bind:show={$showDeviceSetup} />
 {/if}
 

@@ -26,7 +26,7 @@
   import { tabs as sharedTabs, updateTab, openSettingsTab } from '$lib/shared/stores/tabs';
   import { MEETING_EVENT } from '$lib/shared/constants/events';
   import { settings } from '$lib/stores/settings';
-  import { cloudPlan, cloudCredits, upgradeModalOpen } from '$lib/stores/cloud';
+  import { cloudPlan, cloudCredits } from '$lib/stores/cloud';
   import { PROVIDERS } from '$lib/shared/ai/providers';
 
   interface Props {
@@ -364,11 +364,6 @@
   }
 
   function pickClaugeAI() {
-    if (!isPro) {
-      pickerOpen = false;
-      upgradeModalOpen.set(true);
-      return;
-    }
     startGeneration(CLAUGE);
   }
 
@@ -393,8 +388,7 @@
     generating = false;
     progress = null;
     if (message.includes('pro_required')) {
-      showToast('Clauge AI needs an active Pro plan — upgrade to generate notes', 'error');
-      upgradeModalOpen.set(true);
+      showToast('Clauge AI needs an active Pro plan to generate notes', 'error');
     } else if (message.toLowerCase().includes('credit')) {
       // Backend maps upstream 402s to a message that always contains
       // "credits" (shared/ai/clients/errors.rs). There is no separate
@@ -675,7 +669,6 @@
                 role="option"
                 tabindex="0"
                 aria-selected="false"
-                aria-disabled={!isPro}
                 onclick={pickClaugeAI}
                 onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pickClaugeAI(); } }}
               >
@@ -687,12 +680,10 @@
                 <span class="mv-gen-text">
                   <span class="mv-gen-name">Clauge AI</span>
                   <span class="mv-gen-sub">
-                    {#if isPro}Managed · no API key needed{:else}Requires Pro{/if}
+                    Managed · no API key needed
                   </span>
                 </span>
-                {#if !isPro}
-                  <span class="mv-gen-pro">PRO</span>
-                {:else if lowCredits}
+                {#if lowCredits}
                   <span class="mv-gen-low" title="Clauge AI credits are nearly used up — the server decides per run">Low credits</span>
                 {/if}
               </div>
@@ -718,7 +709,7 @@
                 {/each}
               {:else if !isPro}
                 <div class="mv-gen-empty">
-                  Add an API key in Settings or upgrade to Clauge Pro.
+                  Add an API key in Settings.
                   <button type="button" class="mv-gen-settings" onclick={openAIKeySettings}>Open Settings</button>
                 </div>
               {/if}
@@ -1080,17 +1071,6 @@
     font-family: var(--mono);
     font-size: 10px;
     color: var(--t4);
-  }
-  .mv-gen-pro {
-    margin-left: auto;
-    padding: 1px 6px;
-    border-radius: 5px;
-    border: 1px solid color-mix(in srgb, var(--acc) 40%, transparent);
-    color: var(--acc);
-    font-family: var(--mono);
-    font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
   }
   .mv-gen-low {
     margin-left: auto;

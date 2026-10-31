@@ -10,7 +10,6 @@
   import { onMount, onDestroy } from 'svelte';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { coworkers, loadCoworkers } from '../stores';
-  import { upgradeModalOpen } from '$lib/stores/cloud';
   import CoworkerAvatar from './CoworkerAvatar.svelte';
   import CoworkerModal from './CoworkerModal.svelte';
   import type { WorkspaceCoworker } from '../types';
@@ -40,13 +39,6 @@
     modalOpen = true;
   }
   function openTile(cw: WorkspaceCoworker) {
-    // Soft-disabled coworkers belong to a previously-Pro account that
-    // downgraded. Clicking them should sell the upgrade, not let the
-    // user edit a personality that's about to be ignored anyway.
-    if (cw.disabledAt != null) {
-      upgradeModalOpen.set(true);
-      return;
-    }
     editing = cw;
     modalOpen = true;
   }
@@ -89,26 +81,14 @@
         </button>
 
         {#each $coworkers as cw (cw.id)}
-          {@const locked = cw.disabledAt != null}
           <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
           <button
             class="cv-tile"
-            class:cv-tile-locked={locked}
             onclick={() => openTile(cw)}
-            title={locked
-              ? `Locked — upgrade to Pro to re-enable @${cw.name}`
-              : `Edit @${cw.name}`}
+            title={`Edit @${cw.name}`}
           >
             <div class="cv-avatar-wrap">
               <CoworkerAvatar seed={cw.avatarSeed} style={cw.avatarStyle} size={64} ring />
-              {#if locked}
-                <span class="cv-pro-badge" aria-hidden="true">
-                  <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 2l2.6 7.4L22 12l-7.4 2.6L12 22l-2.6-7.4L2 12l7.4-2.6L12 2z" />
-                  </svg>
-                  PRO
-                </span>
-              {/if}
             </div>
             <div class="cv-tile-name">
               @{cw.name}
@@ -116,9 +96,7 @@
             {#if cw.role}
               <div class="cv-tile-role">{cw.role}</div>
             {/if}
-            {#if locked}
-              <div class="cv-tile-locked-cta">Upgrade to re-enable</div>
-            {:else if cw.systemPrompt}
+            {#if cw.systemPrompt}
               <div class="cv-tile-prompt">{cw.systemPrompt}</div>
             {/if}
           </button>
@@ -228,60 +206,10 @@
   .cv-tile-add-plus { font-size: 28px; line-height: 1; font-weight: 300; }
   .cv-tile-add-label { font-family: var(--ui); font-size: 12px; }
 
-  /* Locked tile = previously-Pro coworker, soft-disabled after downgrade.
-     Stays clickable (opens UpgradeModal) instead of passive grey. */
-  .cv-tile-locked {
-    cursor: pointer;
-    border-style: dashed;
-    border-color: color-mix(in srgb, var(--acc) 40%, var(--b1));
-  }
   .cv-tile-locked .cv-tile-name,
-  .cv-tile-locked .cv-tile-role {
-    opacity: 0.55;
-  }
-  .cv-tile-locked:hover {
-    border-color: var(--acc);
-    background: color-mix(in srgb, var(--acc) 6%, var(--surface-card));
-    transform: translateY(-1px);
-  }
   .cv-avatar-wrap {
     position: relative;
     display: inline-flex;
-  }
-  .cv-tile-locked .cv-avatar-wrap {
-    filter: grayscale(0.5);
-    opacity: 0.78;
-  }
-  .cv-pro-badge {
-    position: absolute;
-    top: -4px;
-    right: -8px;
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    padding: 2px 6px 2px 4px;
-    font-family: var(--ui);
-    font-size: 9px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    color: #fff;
-    background: linear-gradient(120deg, var(--acc), color-mix(in srgb, var(--acc) 70%, #fff));
-    border-radius: 999px;
-    box-shadow:
-      0 2px 6px color-mix(in srgb, var(--acc) 35%, transparent),
-      0 0 0 1.5px var(--surface-card);
-    pointer-events: none;
-  }
-  .cv-pro-badge svg {
-    filter: drop-shadow(0 0 2px rgba(255, 255, 255, 0.6));
-  }
-  .cv-tile-locked-cta {
-    margin-top: 2px;
-    font-family: var(--ui);
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--acc);
-    letter-spacing: 0.01em;
   }
   .cv-tile-name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 </style>

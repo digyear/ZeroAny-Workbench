@@ -30,7 +30,7 @@
   import { aiEvent } from '$lib/shared/constants/events';
   import { COPY_FEEDBACK_MS } from '$lib/shared/constants/timings';
   import AIConfigSelector from './AIConfigSelector.svelte';
-  import { cloudPlan, upgradeModalOpen } from '$lib/stores/cloud';
+  import { cloudPlan } from '$lib/stores/cloud';
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -524,10 +524,6 @@
     let apiKey = $settings[`ai_api_key_${provider}`] || '';
     let extraHeaders: Record<string, string> | undefined;
     if (provider === 'clauge') {
-      if (get(cloudPlan) !== 'pro') {
-        upgradeModalOpen.set(true);
-        return;
-      }
       const tok = await cloudGetActiveToken();
       if (!tok) {
         showToast('Sign in to Clauge to use managed AI', 'error');

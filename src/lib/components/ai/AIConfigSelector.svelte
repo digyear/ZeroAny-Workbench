@@ -1,15 +1,13 @@
 <script lang="ts">
-  import { cloudPlan, upgradeModalOpen } from '$lib/stores/cloud';
   import { settings, setSetting } from '$lib/stores/settings';
   import { PROVIDERS, type ProviderId } from '$lib/shared/ai/providers';
 
   const CLAUGE = 'clauge';
 
-  const isPro = $derived($cloudPlan === 'pro');
   // Pro users default to Clauge AI (the thing they paid for) when they
   // haven't explicitly chosen a provider. Free users default to 'claude'.
   const current = $derived<string>(
-    $settings['ai_provider'] || (isPro ? CLAUGE : 'claude'),
+    $settings['ai_provider'] || 'claude',
   );
   const isCurrentClauge = $derived(current === CLAUGE);
 
@@ -35,11 +33,6 @@
   }
 
   function selectProvider(id: string) {
-    if (id === CLAUGE && !isPro) {
-      open = false;
-      upgradeModalOpen.set(true);
-      return;
-    }
     setSetting('ai_provider', id);
     open = false;
   }
@@ -130,13 +123,9 @@
       </span>
       <span class="acs-row-text">
         <span class="acs-row-name">Clauge AI</span>
-        <span class="acs-row-sub">
-          {#if isPro}Managed · no API key needed{:else}Requires Pro{/if}
-        </span>
+        <span class="acs-row-sub">Managed · no API key needed</span>
       </span>
-      {#if !isPro}
-        <span class="acs-pro-badge">PRO</span>
-      {:else if isCurrentClauge}
+      {#if isCurrentClauge}
         <span class="acs-check" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="20 6 9 17 4 12" />
@@ -313,18 +302,6 @@
     font-size: 10.5px;
     color: var(--t3, #888);
     line-height: 1.2;
-  }
-
-  .acs-pro-badge {
-    font-size: 9.5px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    padding: 2px 6px;
-    border-radius: 4px;
-    color: var(--acc, #c2185b);
-    background: color-mix(in srgb, var(--acc, #c2185b) 14%, transparent);
-    border: 1px solid color-mix(in srgb, var(--acc, #c2185b) 30%, transparent);
-    flex-shrink: 0;
   }
   .acs-check {
     color: var(--acc, #c2185b);
