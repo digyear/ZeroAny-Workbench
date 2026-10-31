@@ -205,13 +205,127 @@ pub(crate) async fn exec_on_handle(
         }
     }
 
+    // A bastion can acknowledge an `exec` request locally and close the
+    // channel without ever running the command — JumpServer's koko does
+    // exactly that: exit 0, no output, ~0ms. Fall back to a real shell on a
+    // second channel (the user's terminal channel is untouched).
+    if exit_code.unwrap_or(0) == 0 && stdout.is_empty() && stderr.is_empty() {
+        if let Some(result) = exec_via_shell(handle, command).await {
+            return Ok(result);
+        }
+    }
+
     Ok(json!({
         "command": command,
         "stdout": String::from_utf8_lossy(&stdout),
         "stderr": String::from_utf8_lossy(&stderr),
         "exitCode": exit_code,
         "truncated": truncated,
+        "mode": "exec",
     }))
+}
+
+/// Run the command inside a dedicated shell channel instead of an exec
+/// channel: request a PTY, get a shell, feed a sentinel-wrapped line, read
+/// until the closing sentinel. Works on hosts whose bastion implements
+/// `shell` but not `exec`, and keeps MCP output out of the user's terminal.
+async fn exec_via_shell(
+    handle: &russh::client::Handle<crate::modes::ssh::ssh_session::ClientHandler>,
+    command: &str,
+) -> Option<Value> {
+    let mut channel = handle.channel_open_session().await.ok()?;
+    channel
+        .request_pty(false, "xterm-256color", 200, 50, 0, 0, &[])
+        .await
+        .ok()?;
+    channel.request_shell(false).await.ok()?;
+
+    let tag = uuid::Uuid::new_v4().simple().to_string();
+    let begin = format!("__ZA_B_{}__", tag);
+    let end = format!("__ZA_E_{}__", tag);
+    // `$?` is captured as the LAST thing before the end marker; the leading
+    // newline keeps a prompt from being glued onto the begin marker.
+    let script = format!(
+        "printf '\n{}\n'; {}\nprintf '\n{} %s\n' \"$?\"\n",
+        begin, command, end
+    );
+    channel.data(script.as_bytes()).await.ok()?;
+
+    let mut raw: Vec<u8> = Vec::new();
+    let mut truncated = false;
+    while let Some(msg) = channel.wait().await {
+        match msg {
+            ChannelMsg::Data { data } => {
+                push_capped(&mut raw, &data, &mut truncated);
+                if raw
+                    .windows(end.len())
+                    .any(|w| w == end.as_bytes())
+                {
+                    // Give the trailing exit code a moment to arrive.
+                    let mut tail_deadline = tokio::time::Instant::now()
+                        + std::time::Duration::from_millis(250);
+                    while tokio::time::Instant::now() < tail_deadline {
+                        match tokio::time::timeout(
+                            std::time::Duration::from_millis(50),
+                            channel.wait(),
+                        )
+                        .await
+                        {
+                            Ok(Some(ChannelMsg::Data { data })) => {
+                                push_capped(&mut raw, &data, &mut truncated)
+                            }
+                            Ok(Some(_)) => {}
+                            Ok(None) => break,
+                            Err(_) => {}
+                        }
+                    }
+                    break;
+                }
+            }
+            ChannelMsg::ExtendedData { data, ext } if ext == 1 => {
+                push_capped(&mut raw, &data, &mut truncated)
+            }
+            ChannelMsg::Eof | ChannelMsg::Close => break,
+            _ => {}
+        }
+    }
+    let _ = channel.close().await;
+
+    let text = String::from_utf8_lossy(&raw).replace("\r\n", "\n");
+    let (body, exit_code) = split_sentinel_output(&text, &begin, &end)?;
+    Some(json!({
+        "command": command,
+        "stdout": body,
+        "stderr": "",
+        "exitCode": exit_code,
+        "truncated": truncated,
+        "mode": "shell",
+    }))
+}
+
+/// Pull the payload out of a sentinel-wrapped shell transcript. Returns the
+/// text between the markers and the exit code printed after the end marker.
+/// Everything before the first begin marker (banner, prompt, the echoed
+/// command line) is discarded.
+fn split_sentinel_output(text: &str, begin: &str, end: &str) -> Option<(String, u32)> {
+    // The PTY echoes the command we sent, and that echo *contains* both
+    // marker literals (inside `printf '\n…\n'`). Require a real newline on
+    // both sides of each marker so only the emitted lines match, never the
+    // echoed script.
+    let text = text.replace("\r\n", "\n");
+    let open = format!("\n{}\n", begin);
+    let start = text.find(&open)? + open.len();
+    let rest = &text[start..];
+    let close = format!("\n{} ", end);
+    let stop = rest.find(&close)?;
+    let body = rest[..stop].to_string();
+    let tail = &rest[stop + close.len()..];
+    let code = tail
+        .split_whitespace()
+        .next()
+        .and_then(|c| c.parse::<u32>().ok())
+        .unwrap_or(0);
+    Some((body, code))
 }
 
 /// Append up to the cap, remembering whether anything was dropped. We keep
@@ -234,6 +348,25 @@ fn push_capped(buf: &mut Vec<u8>, data: &[u8], truncated: &mut bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sentinel_output_is_extracted_and_exit_code_read() {
+        // A real transcript: prompt + echoed command before the begin marker,
+        // CRLF line endings, and the exit code after the end marker.
+        let text = "\r\n$ printf '\\n__B__\\n'; uname -a\r\n__B__\r\nLinux box 6.1\r\nalpine\r\n__E__ 0\r\n$ ";
+        let (body, code) = split_sentinel_output(text, "__B__", "__E__").expect("markers present");
+        assert_eq!(body, "Linux box 6.1\nalpine");
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn sentinel_output_reports_nonzero_and_missing_markers() {
+        let text = "\r\n__B__\r\ncat: nope: No such file\r\n__E__ 1\r\n$ ";
+        let (body, code) = split_sentinel_output(text, "__B__", "__E__").expect("markers present");
+        assert!(body.contains("No such file"), "{}", body);
+        assert_eq!(code, 1);
+        assert!(split_sentinel_output("command not found", "__B__", "__E__").is_none());
+    }
 
     #[test]
     fn output_is_capped_and_flagged() {
