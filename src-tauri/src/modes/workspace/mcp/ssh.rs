@@ -180,11 +180,28 @@ async fn run_command(
     budget: Duration,
 ) -> Result<Value, String> {
     if let Some(result) = crate::modes::ssh::live::run(profile_id, command, budget).await {
-        return result.map(|mut value| {
-            value["profileId"] = json!(profile_id);
-            value["via"] = json!("live-session");
-            value
-        });
+        // A host that only allows one channel (bastion) answers the reused
+        // connection with nothing at all. Fall through to a fresh dial in
+        // that case — with an enrolled TOTP seed it can authenticate on its
+        // own, which is exactly why the seed is worth storing.
+        let empty = match &result {
+            Ok(value) => {
+                value["stdout"].as_str().unwrap_or("").is_empty()
+                    && value["stderr"].as_str().unwrap_or("").is_empty()
+            }
+            Err(_) => false,
+        };
+        if !empty {
+            return result.map(|mut value| {
+                value["profileId"] = json!(profile_id);
+                value["via"] = json!("live-session");
+                value
+            });
+        }
+        log::info!(
+            "[mcp] live session returned nothing for {}; retrying on a fresh connection",
+            profile_id
+        );
     }
 
     // `false`: an MCP call has no human to answer an OTP prompt, so the
