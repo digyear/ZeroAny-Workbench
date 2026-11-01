@@ -81,6 +81,11 @@ pub struct SshAuthSpec {
     /// Password (auth_type=password) or passphrase (auth_type=key). None
     /// is fine for unencrypted keys / agent auth.
     pub secret: Option<String>,
+    /// Enrolled TOTP seed (base32) for this profile, if any. When present the
+    /// keyboard-interactive round that asks for a code is answered here
+    /// instead of through the UI — which is what lets an agent authenticate
+    /// without a human.
+    pub totp_secret: Option<String>,
     /// Whether an unanswered challenge (OTP / password prompt) may be handed
     /// to a human through the app's prompt modal. Terminal, tunnels and
     /// Explorer set `true`; MCP calls set `false` — an agent call has nobody
@@ -210,6 +215,15 @@ pub async fn open_authenticated_ssh_session(
             }
         };
 
+        // Enrolled TOTP seed, keyed separately from the password so the two
+        // secrets live independently in the credential store.
+        let totp_secret = crate::shared::platform::credential_store::credential_store()
+            .get(&format!("totp:{}", profile.id))
+            .await
+            .ok()
+            .flatten()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let spec = SshAuthSpec {
             host: profile.host.clone(),
             port: profile.port as u16,
@@ -217,6 +231,7 @@ pub async fn open_authenticated_ssh_session(
             auth_type: profile.auth_type.clone(),
             key_path: profile.key_path.clone(),
             secret,
+            totp_secret,
             interactive,
         };
         prev_handle = Some(perform_ssh_handshake_and_auth(transport, &spec).await?);
@@ -300,6 +315,18 @@ async fn ssh_connect_stream(
     }
 }
 
+/// Does this interactive prompt want a one-time code? Password prompts are
+/// excluded first, so "Password or token:" still goes down the password path.
+fn looks_like_code_prompt(prompt: &str) -> bool {
+    let t = prompt.to_lowercase();
+    if t.contains("password") || t.contains("passphrase") {
+        return false;
+    }
+    ["otp", "one-time", "one time", "verification", "authenticator", "code", "token"]
+        .iter()
+        .any(|k| t.contains(k))
+}
+
 /// True when the error is the "this call cannot answer a challenge" refusal,
 /// which must reach the caller instead of being swallowed into a generic
 /// "authentication failed" (that is what an agent gets, and it is useless).
@@ -321,6 +348,7 @@ async fn perform_ssh_kbi_auth(
             &mut handle,
             &spec.username,
             spec.secret.as_deref(),
+            spec.totp_secret.as_deref(),
             spec.interactive,
         ),
     )
@@ -426,7 +454,14 @@ async fn run_auth(
                 // server answers by offering `keyboard-interactive` for the
                 // second. Without this fallback such hosts just reported
                 // "authentication failed" and the user never saw a code field.
-                try_keyboard_interactive_fallback(handle, &spec.username, None, spec.interactive).await?
+                try_keyboard_interactive_fallback(
+                handle,
+                &spec.username,
+                None,
+                spec.totp_secret.as_deref(),
+                spec.interactive,
+            )
+            .await?
             }
         }
         "password" => {
@@ -449,6 +484,7 @@ async fn run_auth(
                 handle,
                 &spec.username,
                 spec.secret.as_deref(),
+                spec.totp_secret.as_deref(),
                 spec.interactive,
             )
             .await;
@@ -490,6 +526,7 @@ async fn run_auth(
                             handle,
                             &spec.username,
                             spec.secret.as_deref(),
+                            spec.totp_secret.as_deref(),
                             spec.interactive,
                         )
                         .await
@@ -517,7 +554,14 @@ async fn run_auth(
             } else {
                 // Agent + OTP: same story as key auth — the agent proves the
                 // first factor, keyboard-interactive carries the code.
-                try_keyboard_interactive_fallback(handle, &spec.username, None, spec.interactive).await?
+                try_keyboard_interactive_fallback(
+                handle,
+                &spec.username,
+                None,
+                spec.totp_secret.as_deref(),
+                spec.interactive,
+            )
+            .await?
             }
         }
         "interactive" => {
@@ -538,6 +582,7 @@ async fn run_auth(
                 handle,
                 &spec.username,
                 spec.secret.as_deref(),
+                spec.totp_secret.as_deref(),
                 spec.interactive,
             )
             .await?
@@ -579,9 +624,10 @@ async fn try_keyboard_interactive_fallback(
     handle: &mut russh::client::Handle<ClientHandler>,
     username: &str,
     pre_stored_secret: Option<&str>,
+    totp_secret: Option<&str>,
     interactive: bool,
 ) -> Result<bool, String> {
-    match try_keyboard_interactive_with_ui(handle, username, pre_stored_secret, interactive).await {
+    match try_keyboard_interactive_with_ui(handle, username, pre_stored_secret, totp_secret, interactive).await {
         Ok(ok) => Ok(ok),
         Err(error) => {
             if is_challenge_refusal(&error) {
@@ -605,6 +651,7 @@ async fn try_keyboard_interactive_with_ui(
     handle: &mut russh::client::Handle<ClientHandler>,
     username: &str,
     pre_stored_secret: Option<&str>,
+    totp_secret: Option<&str>,
     interactive: bool,
 ) -> Result<bool, String> {
     use russh::client::KeyboardInteractiveAuthResponse;
@@ -663,6 +710,14 @@ async fn try_keyboard_interactive_with_ui(
                     && !prompts[0].echo
                     && prompts[0].prompt.to_lowercase().contains("password");
 
+                // An enrolled seed answers the code round by itself: no
+                // modal, and an agent call can finish headless.
+                let otp = totp_secret
+                    .and_then(|s| crate::modes::ssh::totp::current_code(s).ok())
+                    .map(|(code, _)| code);
+                let asks_code =
+                    !prompts.is_empty() && prompts.iter().all(|p| looks_like_code_prompt(&p.prompt));
+
                 let answers: Vec<String> = if prompts.is_empty() {
                     // Info-only round: PAM stacks sometimes send these
                     // between logical rounds (carrying `name` /
@@ -670,6 +725,13 @@ async fn try_keyboard_interactive_with_ui(
                     // Acknowledge with empty answers — never show a modal
                     // for these, since the user has nothing to type.
                     Vec::new()
+                } else if asks_code && otp.is_some() {
+                    let code = otp.unwrap();
+                    log::info!(
+                        target: "ssh::auth",
+                        "answering one-time-code round from the enrolled TOTP seed"
+                    );
+                    vec![code; prompts.len()]
                 } else if is_first_password_round && pre_stored_secret.is_some() {
                     vec![pre_stored_secret.unwrap().to_string()]
                 } else if !interactive {
@@ -1140,10 +1202,19 @@ mod mfa_ladder_tests {
     }
 
     fn start_fixture() -> Option<Fixture> {
+        start_fixture_expecting(None)
+    }
+
+    /// Spawn the bastion with a specific expected one-time code (None = the
+    /// fixture's default), so a test can hand in a code it computed itself.
+    fn start_fixture_expecting(otp: Option<&str>) -> Option<Fixture> {
         let port = free_port();
-        let child = Command::new("python3")
-            .arg(FIXTURE)
-            .arg(port.to_string())
+        let mut cmd = Command::new("python3");
+        cmd.arg(FIXTURE).arg(port.to_string());
+        if let Some(code) = otp {
+            cmd.arg("default").arg(code);
+        }
+        let child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::from(
                 std::fs::File::create("/tmp/mfa_fixture_stderr.log").unwrap(),
@@ -1203,12 +1274,45 @@ mod mfa_ladder_tests {
             auth_type: "password".to_string(),
             key_path: None,
             secret: Some("pw1".to_string()),
+            totp_secret: None,
             interactive: true,
         };
 
         let handle = open_authenticated_ssh_session_with_spec(spec)
             .await
             .expect("auth must succeed once the OTP is supplied");
+        drop(handle);
+    }
+
+    /// With the seed enrolled, the code round is answered from the app
+    /// itself: no prompt, no human — which is what makes an agent call work
+    /// on a bastion host end to end.
+    #[tokio::test]
+    #[ignore = "spawns python3 + paramiko to emulate a password+OTP bastion"]
+    async fn enrolled_totp_seed_answers_the_code_round() {
+        let _serial = SERIAL.lock().await;
+        init_logger();
+        let seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+        let expected = crate::modes::ssh::totp::current_code(seed)
+            .expect("seed is valid")
+            .0;
+        let Some(fixture) = start_fixture_expecting(Some(&expected)) else {
+            panic!("fixture unavailable — needs python3 with paramiko");
+        };
+
+        let spec = SshAuthSpec {
+            host: "127.0.0.1".to_string(),
+            port: fixture.port,
+            username: "test".to_string(),
+            auth_type: "password".to_string(),
+            key_path: None,
+            secret: Some("pw1".to_string()),
+            totp_secret: Some(seed.to_string()),
+            interactive: true,
+        };
+        let handle = open_authenticated_ssh_session_with_spec(spec)
+            .await
+            .expect("the enrolled seed must satisfy the code round");
         drop(handle);
     }
 
@@ -1232,6 +1336,7 @@ mod mfa_ladder_tests {
             auth_type: "password".to_string(),
             key_path: None,
             secret: Some("pw1".to_string()),
+            totp_secret: None,
             interactive: false,
         };
 
@@ -1278,6 +1383,7 @@ mod mfa_ladder_tests {
             auth_type: "password".to_string(),
             key_path: None,
             secret: Some("pw1".to_string()),
+            totp_secret: None,
             interactive: true,
         };
         let handle = open_authenticated_ssh_session_with_spec(spec)
@@ -1360,6 +1466,7 @@ mod mfa_ladder_tests {
             auth_type: "password".to_string(),
             key_path: None,
             secret: Some("pw1".to_string()),
+            totp_secret: None,
             interactive: true,
         };
         let handle = open_authenticated_ssh_session_with_spec(spec)

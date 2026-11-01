@@ -169,6 +169,7 @@ pub async fn ssh_delete_profile(
 ) -> Result<(), String> {
     // Best-effort: clear credential first. Failures here shouldn't block row deletion.
     let _ = credential_store().delete(&id).await;
+    let _ = credential_store().delete(&totp_key(&id)).await;
     // Drop the MCP grant too — otherwise a deleted connection keeps a row
     // that would re-expose a *new* profile if the id ever got reused.
     let _ = crate::shared::repos::mcp_grants::delete(
@@ -201,4 +202,52 @@ pub async fn ssh_touch_profile(
 #[tauri::command]
 pub async fn ssh_get_credential(id: String) -> Result<Option<String>, String> {
     credential_store().get(&id).await
+}
+
+// ── TOTP enrolment ─────────────────────────────────────────────────────────
+// A one-time code is the one thing an agent cannot supply. Enrolling the seed
+// here lets the app compute it (see `modes::ssh::totp`), so an exposed profile
+// works headless — at the cost of the "second factor" no longer being a second
+// factor. Opt-in per profile, stored in the credential store next to the
+// password, never in the profile row.
+
+fn totp_key(id: &str) -> String {
+    format!("totp:{}", id)
+}
+
+/// Enrol (or clear, with an empty string) the TOTP seed for a profile.
+/// Returns the live code and its remaining lifetime so the UI can show "this
+/// is the code the host will expect right now" — the only sane way to prove
+/// the seed was pasted correctly before relying on it.
+#[tauri::command]
+pub async fn ssh_set_totp(
+    id: String,
+    secret: String,
+) -> Result<serde_json::Value, String> {
+    let store = credential_store();
+    if secret.trim().is_empty() {
+        let _ = store.delete(&totp_key(&id)).await;
+        return Ok(serde_json::json!({ "enrolled": false }));
+    }
+    let normalized = crate::modes::ssh::totp::normalize_secret(&secret)?;
+    let (code, seconds_left) = crate::modes::ssh::totp::current_code(&normalized)?;
+    store
+        .store(&totp_key(&id), &normalized)
+        .await
+        .map_err(|e| format!("credential store: {}", e))?;
+    Ok(serde_json::json!({
+        "enrolled": true,
+        "code": code,
+        "secondsLeft": seconds_left,
+    }))
+}
+
+#[tauri::command]
+pub async fn ssh_has_totp(id: String) -> Result<bool, String> {
+    Ok(credential_store()
+        .get(&totp_key(&id))
+        .await
+        .map_err(|e| format!("credential store: {}", e))?
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false))
 }

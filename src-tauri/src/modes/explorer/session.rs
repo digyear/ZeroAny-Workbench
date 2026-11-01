@@ -90,7 +90,8 @@ async fn open_backend(
                     auth_type,
                     key_path: conn.key_path.clone(),
                     secret,
-                    interactive: true,
+                    totp_secret: None,
+                interactive: true,
                 };
                 crate::modes::ssh::ssh_session::open_authenticated_ssh_session_with_spec(spec)
                     .await?

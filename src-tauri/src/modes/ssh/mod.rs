@@ -16,4 +16,5 @@ pub mod policy;
 pub mod profiles;
 pub mod ssh_session;
 pub mod terminal;
+pub mod totp;
 pub mod tunnel;

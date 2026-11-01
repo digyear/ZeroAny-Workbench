@@ -1,6 +1,6 @@
 <script lang="ts">
   import Modal from '$lib/shared/primitives/Modal.svelte';
-  import { sshUpdateProfile } from '../commands';
+  import { sshUpdateProfile, sshHasTotp, sshSetTotp } from '../commands';
   import { loadSshProfiles, sshProfiles } from '../stores';
   import { showToast } from '$lib/shared/primitives/toast';
   import type { SshAuthType, SshProfile } from '../types';
@@ -21,6 +21,11 @@
   let keyPath = $state('');
   let passphrase = $state('');
   let password = $state('');
+  // TOTP enrolment: lets the app answer the one-time-code round itself.
+  let totpHas = $state(false);
+  let totpSeed = $state('');
+  let totpCode = $state<string | null>(null);
+  let totpBusy = $state(false);
   let revealSecret = $state(false);
   let loading = $state(false);
   let connectionMode = $state<ConnectionMode>('direct');
@@ -41,6 +46,8 @@
       keyPath = profile.keyPath ?? '';
       passphrase = '';
       password = '';
+      totpCode = null;
+      void loadTotp(profile.id);
       revealSecret = false;
       // ProxyCommand wins over jumpProfileId if both populated — matches
       // the connect path's precedence so the user sees what's used.
@@ -78,6 +85,45 @@
       if (typeof selected === 'string') keyPath = selected;
     } catch {
       /* ignore */
+    }
+  }
+
+  async function loadTotp(id: string) {
+    try {
+      totpHas = await sshHasTotp(id);
+    } catch {
+      totpHas = false;
+    }
+  }
+
+  async function saveTotp() {
+    if (!profile || !totpSeed.trim()) return;
+    totpBusy = true;
+    try {
+      const res = await sshSetTotp(profile.id, totpSeed.trim());
+      totpHas = res.enrolled;
+      totpCode = res.code ?? null;
+      totpSeed = '';
+      showToast(res.enrolled ? `TOTP enrolled — current code ${res.code}` : 'TOTP cleared', 'success');
+    } catch (e) {
+      showToast(String(e), 'error');
+    } finally {
+      totpBusy = false;
+    }
+  }
+
+  async function clearTotp() {
+    if (!profile) return;
+    totpBusy = true;
+    try {
+      await sshSetTotp(profile.id, '');
+      totpHas = false;
+      totpCode = null;
+      showToast('TOTP seed removed', 'success');
+    } catch (e) {
+      showToast(String(e), 'error');
+    } finally {
+      totpBusy = false;
     }
   }
 
@@ -212,6 +258,42 @@
             </div>
           </div>
         {/if}
+
+        <div class="sshd-block">
+          <span class="sshd-label">
+            Second factor (TOTP)
+            <span class="sshd-optional">(optional)</span>
+          </span>
+          <div class="sshd-with-suffix">
+            <input
+              class="sshd-input mono"
+              type={revealSecret ? 'text' : 'password'}
+              bind:value={totpSeed}
+              placeholder={totpHas ? 'Enrolled — paste a new seed to replace' : 'Base32 seed or otpauth:// URI'}
+              autocomplete="off"
+            />
+            <button
+              class="sshd-suffix-btn"
+              type="button"
+              onclick={saveTotp}
+              disabled={totpBusy || !totpSeed.trim()}
+              title="Verify and save the seed"
+            >{totpBusy ? '…' : 'Save'}</button>
+          </div>
+          <div class="sshd-totp-note">
+            {#if totpCode}
+              Enrolled — the code right now is <strong class="mono">{totpCode}</strong>.
+              If the host rejects it, the seed is wrong or the clocks disagree.
+            {:else if totpHas}
+              Enrolled. The app answers the one-time-code round itself, so agents need no
+              human. <button class="sshd-totp-clear" type="button" onclick={clearTotp} disabled={totpBusy}>Remove</button>
+            {:else}
+              Without this the app asks you for the code on every connect, and an agent
+              cannot authenticate at all. Like any stored secret, it makes the host rely on
+              this machine alone.
+            {/if}
+          </div>
+        </div>
       {:else}
         <div class="sshd-block">
           <span class="sshd-label">Routing</span>
@@ -270,6 +352,22 @@
 </Modal>
 
 <style>
+  .sshd-totp-note {
+    margin-top: 6px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--t3);
+  }
+  .sshd-totp-clear {
+    background: none;
+    border: none;
+    padding: 0;
+    margin-left: 4px;
+    color: var(--acc);
+    font-size: 11px;
+    cursor: pointer;
+    text-decoration: underline;
+  }
   .sshd-root {
     display: flex;
     flex-direction: column;

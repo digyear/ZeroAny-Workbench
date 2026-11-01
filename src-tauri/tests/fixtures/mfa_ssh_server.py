@@ -24,7 +24,9 @@ HOST, PORT = "127.0.0.1", int(sys.argv[1]) if len(sys.argv) > 1 else 2222
 SIMPLE = len(sys.argv) > 2 and sys.argv[2] == "simple"
 USER = "test"
 PASSWORD = "pw1"
-OTP = "123456"
+# Third argv (optional) overrides the expected one-time code, so a test can
+# hand in a code it computed itself (TOTP auto-answer) instead of the fixed one.
+OTP = sys.argv[3] if len(sys.argv) > 3 else "123456"
 
 
 class Server(paramiko.ServerInterface):

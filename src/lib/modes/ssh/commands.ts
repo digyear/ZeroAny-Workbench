@@ -85,3 +85,13 @@ export const sshKillTerminal = (terminalId: string) =>
  *  `requestId` matches the payload from the `ssh:auth-prompts` event. */
 export const sshSubmitAuthPrompts = (requestId: string, answers: string[]) =>
   invoke<void>('ssh_submit_auth_prompts', { requestId, answers });
+
+// ── TOTP enrolment ─────────────────────────────────────────────────────────
+// The seed makes the app able to compute the one-time code itself, which is
+// what lets an agent authenticate without a human. Stored in the OS
+// credential store, not in the database.
+
+export const sshHasTotp = (id: string) => invoke<boolean>('ssh_has_totp', { id });
+
+export const sshSetTotp = (id: string, secret: string) =>
+  invoke<{ enrolled: boolean; code?: string; secondsLeft?: number }>('ssh_set_totp', { id, secret });

@@ -59,6 +59,9 @@ russh = "0.65"
 async-trait = "0.1"
 async-stream = "0.3"
 sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+data-encoding = "2"
 # Argv-style tokenizer used for OpenSSH ProxyCommand. Splits a template
 # like `cloudflared access ssh --hostname %h` into argv WITHOUT spawning
 # a shell — keeps cross-platform behavior identical and avoids shell
