@@ -333,7 +333,22 @@ async fn exec_via_shell(
 
     let mut raw: Vec<u8> = Vec::new();
     let mut truncated = false;
-    while let Some(msg) = channel.wait().await {
+    // Bounded: a host that never reaches the sentinel (bad menu answer, extra
+    // prompt) must come back with its transcript instead of pinning the
+    // caller until the outer MCP timeout erases every clue.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(25);
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        let Some(msg) = tokio::time::timeout(left, channel.wait())
+            .await
+            .ok()
+            .flatten()
+        else {
+            break;
+        };
         match msg {
             ChannelMsg::Data { data } => {
                 push_capped(&mut raw, &data, &mut truncated);
