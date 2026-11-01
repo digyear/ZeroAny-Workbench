@@ -131,6 +131,10 @@ pub(super) async fn exec(pool: &SqlitePool, args: &Value) -> Result<Value, (i32,
         {
             Ok(Some(Ok(mut value))) => {
                 value["profileId"] = json!(profile_id);
+                // Same field the isolated path reports, so a caller can tell
+                // where the output came from without guessing: this ran in the
+                // user's own terminal shell.
+                value["via"] = json!("shared-terminal");
                 Ok(value)
             }
             Ok(Some(Err(e))) => Err((-32603, e)),
