@@ -144,6 +144,47 @@ pub async fn load(pool: &SqlitePool, profile_id: &str) -> PostConnect {
     }
 }
 
+
+/// Wait until the channel goes quiet.
+///
+/// Answering an asset menu starts a *new* connection underneath — the bastion
+/// prints progress dots, then the host's banner, then the prompt. Anything
+/// sent during that window is swallowed. Rather than guess a sleep length,
+/// wait for `quiet_ms` without output (and give up after `max_ms`).
+pub async fn wait_for_quiet<F>(
+    chan: &mut Channel<Msg>,
+    quiet_ms: u64,
+    max_ms: u64,
+    mut on_data: F,
+) -> Vec<u8>
+where
+    F: FnMut(&[u8]),
+{
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(max_ms);
+    let mut seen: Vec<u8> = Vec::new();
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        let window = left.min(Duration::from_millis(quiet_ms));
+        match tokio::time::timeout(window, chan.wait()).await {
+            Ok(Some(ChannelMsg::Data { data })) => {
+                on_data(data.as_ref());
+                seen.extend_from_slice(&data);
+            }
+            Ok(Some(ChannelMsg::ExtendedData { data, .. })) => {
+                on_data(data.as_ref());
+                seen.extend_from_slice(&data);
+            }
+            Ok(Some(_)) => {}
+            // Channel closed, or no output for `quiet_ms`: settled.
+            Ok(None) | Err(_) => break,
+        }
+    }
+    seen
+}
+
 /// Run the steps against an open shell channel.
 ///
 /// `on_data` receives every chunk read while waiting, so the terminal can

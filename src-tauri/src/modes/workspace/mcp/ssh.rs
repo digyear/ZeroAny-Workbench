@@ -318,6 +318,9 @@ async fn exec_via_shell(
     // the menu and nothing runs. Steps wait for their prompt text.
     if let Some(post) = post.filter(|p| !p.is_empty()) {
         crate::modes::ssh::post_connect::run_steps(&mut channel, &post.steps, |_| {}).await;
+        // Selecting an asset opens a second connection underneath: wait for
+        // the host prompt to stop moving before typing the command.
+        crate::modes::ssh::post_connect::wait_for_quiet(&mut channel, 600, 25_000, |_| {}).await;
     }
 
     let tag = uuid::Uuid::new_v4().simple().to_string();

@@ -192,6 +192,12 @@ async fn run_ssh_session(
             fanout::publish(&tid, data);
         })
         .await;
+        // The bastion connects to the chosen asset after the menu answer;
+        // let that settle so nothing is typed into the progress spinner.
+        crate::modes::ssh::post_connect::wait_for_quiet(&mut chan, 600, 25_000, |data| {
+            fanout::publish(&tid, data);
+        })
+        .await;
         log::info!(
             "[ssh] replayed {} post-connect step(s) for {}",
             post.steps.len(),
