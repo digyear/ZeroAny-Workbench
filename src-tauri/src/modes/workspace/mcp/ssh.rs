@@ -179,7 +179,14 @@ async fn run_command(
     command: &str,
     budget: Duration,
 ) -> Result<Value, String> {
-    if let Some(result) = crate::modes::ssh::live::run(profile_id, command, budget).await {
+    let post = crate::modes::ssh::post_connect::load(pool, profile_id).await;
+
+    // A menu-bastion can't serve a second channel: every channel on that
+    // connection starts at the asset menu again, so reusing it would type the
+    // command into the menu. The one thing reuse saves — the auth round — is
+    // free anyway when a TOTP seed is enrolled, so dial fresh instead.
+    if post.is_empty() {
+        if let Some(result) = crate::modes::ssh::live::run(profile_id, command, budget).await {
         // A host that only allows one channel (bastion) answers the reused
         // connection with nothing at all. Fall through to a fresh dial in
         // that case — with an enrolled TOTP seed it can authenticate on its
@@ -202,12 +209,12 @@ async fn run_command(
             "[mcp] live session returned nothing for {}; retrying on a fresh connection",
             profile_id
         );
+        }
     }
 
     // `false`: an MCP call has no human to answer an OTP prompt, so the
     // connect fails fast with the prompt names instead of stalling.
     let handle = open_authenticated_ssh_session(pool, profile_id, false).await?;
-    let post = crate::modes::ssh::post_connect::load(pool, profile_id).await;
     let result = exec_on_handle(&handle, command, Some(&post)).await;
     // Best effort: the server closes on its own if this fails.
     let _ = handle
