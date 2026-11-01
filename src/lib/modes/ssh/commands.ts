@@ -95,3 +95,7 @@ export const sshHasTotp = (id: string) => invoke<boolean>('ssh_has_totp', { id }
 
 export const sshSetTotp = (id: string, secret: string) =>
   invoke<{ enrolled: boolean; code?: string; secondsLeft?: number }>('ssh_set_totp', { id, secret });
+
+/** Prove the enrolled seed works against the host (a real login attempt). */
+export const sshTestTotp = (id: string) =>
+  invoke<{ ok: boolean; detail: string }>('ssh_test_totp', { id });

@@ -251,3 +251,37 @@ pub async fn ssh_has_totp(id: String) -> Result<bool, String> {
         .map(|v| !v.trim().is_empty())
         .unwrap_or(false))
 }
+
+/// Prove the enrolled seed actually satisfies this host, right after saving
+/// it. Runs the real connect path non-interactively: with a correct seed it
+/// authenticates without any prompt, which is exactly the property MCP calls
+/// depend on. A wrong seed comes back as the "needs an interactive challenge"
+/// refusal.
+///
+/// Note: this is a real login attempt — a bastion may count it against its
+/// lockout budget, so it is a button the user presses rather than something
+/// the UI does on every keystroke.
+#[tauri::command]
+pub async fn ssh_test_totp(
+    pool: State<'_, SqlitePool>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    if !ssh_has_totp(id.clone()).await? {
+        return Err("no TOTP seed enrolled for this profile".to_string());
+    }
+    match crate::modes::ssh::ssh_session::open_authenticated_ssh_session(
+        pool.inner(),
+        &id,
+        false,
+    )
+    .await
+    {
+        Ok(handle) => {
+            let _ = handle
+                .disconnect(russh::Disconnect::ByApplication, "", "en")
+                .await;
+            Ok(serde_json::json!({ "ok": true, "detail": "authenticated with the enrolled seed" }))
+        }
+        Err(e) => Ok(serde_json::json!({ "ok": false, "detail": e })),
+    }
+}

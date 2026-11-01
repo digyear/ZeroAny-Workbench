@@ -80,6 +80,7 @@
     "@xterm/xterm": "^6.1.0-beta.216",
     "codemirror": "^6.0.2",
     "dompurify": "^3.4.0",
+    "jsqr": "^1.4.0",
     "marked": "^18.0.2",
     "node-sql-parser": "^5.4.0",
     "qrcode": "^1.5.4",

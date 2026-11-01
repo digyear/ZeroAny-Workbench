@@ -612,6 +612,7 @@ pub fn run() {
             modes::ssh::profiles::ssh_list_profiles,
             modes::ssh::profiles::ssh_set_totp,
             modes::ssh::profiles::ssh_has_totp,
+            modes::ssh::profiles::ssh_test_totp,
             commands::mcp_grants::mcp_grants_list,
             commands::mcp_grants::mcp_grant_set,
             commands::mcp_grants::mcp_live_sessions,

@@ -1,6 +1,7 @@
 <script lang="ts">
   import Modal from '$lib/shared/primitives/Modal.svelte';
-  import { sshUpdateProfile, sshHasTotp, sshSetTotp } from '../commands';
+  import jsQR from 'jsqr';
+  import { sshUpdateProfile, sshHasTotp, sshSetTotp, sshTestTotp } from '../commands';
   import { loadSshProfiles, sshProfiles } from '../stores';
   import { showToast } from '$lib/shared/primitives/toast';
   import type { SshAuthType, SshProfile } from '../types';
@@ -26,6 +27,9 @@
   let totpSeed = $state('');
   let totpCode = $state<string | null>(null);
   let totpBusy = $state(false);
+  let totpTest = $state<{ ok: boolean; detail: string } | null>(null);
+  let showTotpHelp = $state(false);
+  let qrInput: HTMLInputElement | undefined = $state();
   let revealSecret = $state(false);
   let loading = $state(false);
   let connectionMode = $state<ConnectionMode>('direct');
@@ -107,6 +111,54 @@
       showToast(res.enrolled ? `TOTP enrolled — current code ${res.code}` : 'TOTP cleared', 'success');
     } catch (e) {
       showToast(String(e), 'error');
+    } finally {
+      totpBusy = false;
+    }
+  }
+
+  /** Decode an `otpauth://` QR straight from a screenshot — the host shows a
+   *  QR while enrolling, never the seed itself, so this is the realistic path
+   *  (no third-party scanner needed). */
+  async function importQr(file: File) {
+    if (!profile) return;
+    totpBusy = true;
+    totpTest = null;
+    try {
+      const bitmap = await createImageBitmap(file);
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('canvas unavailable');
+      ctx.drawImage(bitmap, 0, 0);
+      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const qr = jsQR(pixels.data, pixels.width, pixels.height);
+      if (!qr) throw new Error('no QR code found in that image');
+      const text = qr.data.trim();
+      if (!/^otpauth:\/\//i.test(text)) {
+        throw new Error(`that QR is not an otpauth URI (${text.slice(0, 40)}…)`);
+      }
+      const res = await sshSetTotp(profile.id, text);
+      totpHas = res.enrolled;
+      totpCode = res.code ?? null;
+      totpSeed = '';
+      showToast(`TOTP enrolled — current code ${res.code}`, 'success');
+    } catch (e) {
+      showToast(String(e), 'error');
+    } finally {
+      totpBusy = false;
+      if (qrInput) qrInput.value = '';
+    }
+  }
+
+  async function testTotp() {
+    if (!profile) return;
+    totpBusy = true;
+    totpTest = null;
+    try {
+      totpTest = await sshTestTotp(profile.id);
+    } catch (e) {
+      totpTest = { ok: false, detail: String(e) };
     } finally {
       totpBusy = false;
     }
@@ -286,13 +338,49 @@
               If the host rejects it, the seed is wrong or the clocks disagree.
             {:else if totpHas}
               Enrolled. The app answers the one-time-code round itself, so agents need no
-              human. <button class="sshd-totp-clear" type="button" onclick={clearTotp} disabled={totpBusy}>Remove</button>
+              human.
+              <button class="sshd-totp-clear" type="button" onclick={testTotp} disabled={totpBusy}>Test against host</button>
+              ·
+              <button class="sshd-totp-clear" type="button" onclick={clearTotp} disabled={totpBusy}>Remove</button>
             {:else}
               Without this the app asks you for the code on every connect, and an agent
               cannot authenticate at all. Like any stored secret, it makes the host rely on
               this machine alone.
             {/if}
+            {#if totpTest}
+              <div class="sshd-totp-result" class:ok={totpTest.ok}>{totpTest.detail}</div>
+            {/if}
           </div>
+          <div class="sshd-totp-actions">
+            <button class="sshd-totp-help-toggle" type="button" onclick={() => (showTotpHelp = !showTotpHelp)}>
+              {showTotpHelp ? 'Hide' : 'Where do I get the seed?'}
+            </button>
+            <span class="sshd-totp-sep">·</span>
+            <button class="sshd-totp-help-toggle" type="button" onclick={() => qrInput?.click()} disabled={totpBusy}>
+              Import QR screenshot
+            </button>
+            <input
+              class="sshd-totp-file"
+              type="file"
+              accept="image/*"
+              bind:this={qrInput}
+              onchange={(e) => {
+                const f = e.currentTarget.files?.[0];
+                if (f) void importQr(f);
+              }}
+            />
+          </div>
+          {#if showTotpHelp}
+            <div class="sshd-totp-help">
+              The host never shows an existing seed — it is only visible while enrolling.
+              For JumpServer: <em>个人设置 → MFA/OTP → 重新绑定</em>, and the QR it shows
+              encodes <span class="mono">otpauth://totp/…?secret=…</span>. Paste that URI
+              here (or just the <span class="mono">secret</span> part). Scan the same QR into
+              your phone as well if you want both to keep working — one seed, several
+              authenticators. Rebinding invalidates the previous binding, so do it while you
+              have the QR in front of you.
+            </div>
+          {/if}
         </div>
       {:else}
         <div class="sshd-block">
@@ -356,6 +444,46 @@
     margin-top: 6px;
     font-size: 11px;
     line-height: 1.5;
+    color: var(--t3);
+  }
+  .sshd-totp-result {
+    margin-top: 6px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--danger, #e05a5a);
+  }
+  .sshd-totp-result.ok {
+    color: var(--success, #4caf7d);
+  }
+  .sshd-totp-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .sshd-totp-sep {
+    color: var(--t4, var(--t3));
+    font-size: 11px;
+  }
+  .sshd-totp-file {
+    display: none;
+  }
+  .sshd-totp-help-toggle {
+    margin-top: 0;
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--t3);
+    font-size: 11px;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+  .sshd-totp-help {
+    margin-top: 4px;
+    padding: 8px 10px;
+    border-left: 2px solid var(--b1);
+    font-size: 11px;
+    line-height: 1.55;
     color: var(--t3);
   }
   .sshd-totp-clear {
