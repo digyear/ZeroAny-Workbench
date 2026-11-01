@@ -3,10 +3,10 @@ use sqlx::SqlitePool;
 use crate::modes::ssh::models::SshProfile;
 
 pub async fn list_all(pool: &SqlitePool) -> Result<Vec<SshProfile>, sqlx::Error> {
+    // `SELECT *` on purpose: an enumerated column list silently breaks every
+    // list call the moment a migration adds a column the struct expects.
     sqlx::query_as::<_, SshProfile>(
-        "SELECT id, name, host, port, username, auth_type, key_path, accent_color, \
-                last_used_at, created_at, jump_profile_id, proxy_command \
-         FROM ssh_profiles \
+        "SELECT * FROM ssh_profiles \
          ORDER BY (last_used_at IS NULL), last_used_at DESC, created_at DESC",
     )
     .fetch_all(pool)
@@ -183,4 +183,37 @@ pub async fn update_proxy_command(
         .execute(pool)
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A migration that adds a column must not break the profile list — the
+    /// bug that hid every SSH profile from the UI (#4.4.4).
+    #[tokio::test]
+    async fn list_all_survives_columns_added_by_migrations() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        crate::db::migrator::MIGRATOR.run(&pool).await.unwrap();
+        insert(
+            &pool,
+            "p1",
+            "box",
+            "host.example",
+            22,
+            "root",
+            "password",
+            None,
+            None,
+            "2026-01-01T00:00:00Z",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let rows = list_all(&pool).await.expect("list must not fail");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "box");
+        assert!(rows[0].post_connect_inputs.is_none());
+    }
 }
