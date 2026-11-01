@@ -1473,7 +1473,7 @@ mod mfa_ladder_tests {
             .await
             .expect("auth must succeed");
 
-        let result = crate::modes::workspace::mcp::exec_on_handle(&handle, "uname -a")
+        let result = crate::modes::workspace::mcp::exec_on_handle(&handle, "uname -a", None)
             .await
             .expect("exec must succeed");
         assert_eq!(result["exitCode"], 0);

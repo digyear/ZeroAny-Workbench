@@ -234,7 +234,7 @@ async fn worker(
 ) {
     log::info!(target: "ssh::auth", "live session parked for {}", profile_id);
     while let Some(job) = rx.recv().await {
-        let result = crate::modes::workspace::mcp::exec_on_handle(&handle, &job.command).await;
+        let result = crate::modes::workspace::mcp::exec_on_handle(&handle, &job.command, None).await;
         let _ = job.reply.send(result);
     }
     log::info!(target: "ssh::auth", "live session closed for {}", profile_id);

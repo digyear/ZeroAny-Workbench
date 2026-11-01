@@ -13,6 +13,7 @@ pub mod config_import;
 pub mod live;
 pub mod models;
 pub mod policy;
+pub mod post_connect;
 pub mod profiles;
 pub mod ssh_session;
 pub mod terminal;

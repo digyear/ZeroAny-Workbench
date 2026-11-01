@@ -1,7 +1,7 @@
 <script lang="ts">
   import Modal from '$lib/shared/primitives/Modal.svelte';
   import jsQR from 'jsqr';
-  import { sshUpdateProfile, sshHasTotp, sshSetTotp, sshTestTotp } from '../commands';
+  import { sshUpdateProfile, sshHasTotp, sshSetTotp, sshTestTotp, sshSetPostConnect } from '../commands';
   import { loadSshProfiles, sshProfiles } from '../stores';
   import { showToast } from '$lib/shared/primitives/toast';
   import type { SshAuthType, SshProfile } from '../types';
@@ -27,6 +27,9 @@
   let totpSeed = $state('');
   let totpCode = $state<string | null>(null);
   let totpBusy = $state(false);
+  // Bastion asset menus: answers typed right after the shell opens.
+  let postInputs = $state('');
+  let postDelay = $state(800);
   let totpTest = $state<{ ok: boolean; detail: string } | null>(null);
   let showTotpHelp = $state(false);
   let qrInput: HTMLInputElement | undefined = $state();
@@ -51,6 +54,8 @@
       passphrase = '';
       password = '';
       totpCode = null;
+      postInputs = profile.postConnectInputs ?? '';
+      postDelay = profile.postConnectDelayMs ?? 800;
       void loadTotp(profile.id);
       revealSecret = false;
       // ProxyCommand wins over jumpProfileId if both populated — matches
@@ -171,6 +176,8 @@
       await sshSetTotp(profile.id, '');
       totpHas = false;
       totpCode = null;
+      postInputs = profile.postConnectInputs ?? '';
+      postDelay = profile.postConnectDelayMs ?? 800;
       showToast('TOTP seed removed', 'success');
     } catch (e) {
       showToast(String(e), 'error');
@@ -206,6 +213,7 @@
         proxyCommand:
           connectionMode === 'command' && proxyCommand.trim() ? proxyCommand.trim() : '',
       });
+      await sshSetPostConnect(updated.id, postInputs, postDelay);
       await loadSshProfiles();
       window.dispatchEvent(new CustomEvent(SSH_EVENT.PROFILE_UPDATED, { detail: updated }));
       show = false;
@@ -310,6 +318,25 @@
             </div>
           </div>
         {/if}
+
+        <div class="sshd-block">
+          <span class="sshd-label">
+            After connect
+            <span class="sshd-optional">(bastion menu)</span>
+          </span>
+          <textarea
+            class="sshd-input mono"
+            rows="2"
+            bind:value={postInputs}
+            placeholder="e.g. 2   (one answer per line — asset number, name or IP)"
+          ></textarea>
+          <div class="sshd-totp-note">
+            JumpServer-style bastions ask which asset to open before you get a host shell;
+            anything typed until then goes to the menu. These lines are typed for you, in
+            order, {postDelay}ms after the shell opens — the same for the terminal and for
+            agents.
+          </div>
+        </div>
 
         <div class="sshd-block">
           <span class="sshd-label">

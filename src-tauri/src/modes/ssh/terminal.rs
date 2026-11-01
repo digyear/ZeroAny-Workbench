@@ -182,6 +182,28 @@ async fn run_ssh_session(
     // calls (and anything else headless) can reuse it instead of doing their
     // own auth — the only way in on a host that wants a one-time code. The
     // guard drops at the end of this session, closing the connection with it.
+    // A bastion's asset menu must be answered before anything else is typed.
+    let post = crate::modes::ssh::post_connect::load(pool, profile_id).await;
+    if !post.is_empty() {
+        for (idx, line) in post.lines.iter().enumerate() {
+            let wait = if idx == 0 {
+                post.first_delay_ms
+            } else {
+                crate::modes::ssh::post_connect::GAP_MS
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+            if let Err(e) = chan.data(format!("{}\r", line).as_bytes()).await {
+                log::warn!("[ssh] post-connect input failed: {}", e);
+                break;
+            }
+        }
+        log::info!(
+            "[ssh] replayed {} post-connect line(s) for {}",
+            post.lines.len(),
+            profile_id
+        );
+    }
+
     let _live = crate::modes::ssh::live::attach(profile_id, handle);
     // Shared ("borrow") mode types into THIS shell; the guard removes the
     // link when the terminal ends.

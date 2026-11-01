@@ -207,7 +207,8 @@ async fn run_command(
     // `false`: an MCP call has no human to answer an OTP prompt, so the
     // connect fails fast with the prompt names instead of stalling.
     let handle = open_authenticated_ssh_session(pool, profile_id, false).await?;
-    let result = exec_on_handle(&handle, command).await;
+    let post = crate::modes::ssh::post_connect::load(pool, profile_id).await;
+    let result = exec_on_handle(&handle, command, Some(&post)).await;
     // Best effort: the server closes on its own if this fails.
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "en")
@@ -225,7 +226,18 @@ async fn run_command(
 pub(crate) async fn exec_on_handle(
     handle: &russh::client::Handle<crate::modes::ssh::ssh_session::ClientHandler>,
     command: &str,
+    post: Option<&crate::modes::ssh::post_connect::PostConnect>,
 ) -> Result<Value, String> {
+    // A profile with a bastion menu script is a host that only ever gives a
+    // shell: an `exec` channel there is either a silent no-op or consumes
+    // the single channel the bastion allows. Go straight to the shell.
+    if let Some(post) = post.filter(|p| !p.is_empty()) {
+        return exec_via_shell(handle, command, Some(post)).await.ok_or_else(|| {
+            "host answered the shell attempt with nothing — check the After-connect lines"
+                .to_string()
+        });
+    }
+
     let mut channel = handle
         .channel_open_session()
         .await
@@ -260,7 +272,7 @@ pub(crate) async fn exec_on_handle(
     // exactly that: exit 0, no output, ~0ms. Fall back to a real shell on a
     // second channel (the user's terminal channel is untouched).
     if exit_code.unwrap_or(0) == 0 && stdout.is_empty() && stderr.is_empty() {
-        if let Some(result) = exec_via_shell(handle, command).await {
+        if let Some(result) = exec_via_shell(handle, command, post).await {
             return Ok(result);
         }
     }
@@ -291,6 +303,7 @@ pub(crate) async fn exec_on_handle(
 async fn exec_via_shell(
     handle: &russh::client::Handle<crate::modes::ssh::ssh_session::ClientHandler>,
     command: &str,
+    post: Option<&crate::modes::ssh::post_connect::PostConnect>,
 ) -> Option<Value> {
     let mut channel = handle.channel_open_session().await.ok()?;
     channel
@@ -298,6 +311,20 @@ async fn exec_via_shell(
         .await
         .ok()?;
     channel.request_shell(false).await.ok()?;
+
+    // Answer a bastion's asset menu first; otherwise the sentinel lands in
+    // the menu and nothing runs.
+    if let Some(post) = post.filter(|p| !p.is_empty()) {
+        for (idx, line) in post.lines.iter().enumerate() {
+            let wait = if idx == 0 {
+                post.first_delay_ms
+            } else {
+                crate::modes::ssh::post_connect::GAP_MS
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
+            channel.data(format!("{}\r", line).as_bytes()).await.ok()?;
+        }
+    }
 
     let tag = uuid::Uuid::new_v4().simple().to_string();
     let begin = format!("__ZA_B_{}__", tag);

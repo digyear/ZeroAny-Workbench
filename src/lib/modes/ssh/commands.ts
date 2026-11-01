@@ -99,3 +99,7 @@ export const sshSetTotp = (id: string, secret: string) =>
 /** Prove the enrolled seed works against the host (a real login attempt). */
 export const sshTestTotp = (id: string) =>
   invoke<{ ok: boolean; detail: string }>('ssh_test_totp', { id });
+
+/** What to type into the shell right after it opens (bastion asset menus). */
+export const sshSetPostConnect = (id: string, inputs: string, delayMs?: number) =>
+  invoke<void>('ssh_set_post_connect', { id, inputs, delayMs });

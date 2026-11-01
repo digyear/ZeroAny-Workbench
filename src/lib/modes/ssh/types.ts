@@ -31,6 +31,10 @@ export interface SshProfile {
   /** ID of another SshProfile to jump through (OpenSSH ProxyJump). NULL =
    *  direct connect. The connect path traverses jump pointers recursively. */
   jumpProfileId: string | null;
+  /** Lines typed into the shell right after it opens — the answer to a
+   *  bastion's asset menu (one per line). */
+  postConnectInputs?: string | null;
+  postConnectDelayMs?: number | null;
   /** OpenSSH ProxyCommand template with %h/%p/%r placeholders. Spawned as
    *  a subprocess (no shell) at connect time. NULL = no proxy command.
    *  When both this and jumpProfileId are set, this wins (matches OpenSSH). */

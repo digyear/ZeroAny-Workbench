@@ -31,6 +31,12 @@ pub struct SshProfile {
     /// command. If both this and `jump_profile_id` are set, ProxyCommand
     /// wins (matches OpenSSH spec).
     pub proxy_command: Option<String>,
+    /// Newline-separated lines typed into the shell right after it opens —
+    /// the answer to a bastion's asset menu (e.g. `2`, or `10.0.0.5`).
+    /// NULL/empty = interact with the host directly.
+    pub post_connect_inputs: Option<String>,
+    /// How long to wait before the first line, in ms.
+    pub post_connect_delay_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

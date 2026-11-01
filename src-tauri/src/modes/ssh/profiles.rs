@@ -285,3 +285,34 @@ pub async fn ssh_test_totp(
         Err(e) => Ok(serde_json::json!({ "ok": false, "detail": e })),
     }
 }
+
+/// What to type into the shell right after it opens — the answer to a
+/// bastion's asset menu. Newline-separated; blank clears it.
+#[tauri::command]
+pub async fn ssh_set_post_connect(
+    pool: State<'_, SqlitePool>,
+    id: String,
+    inputs: String,
+    delay_ms: Option<i64>,
+) -> Result<(), String> {
+    let normalised = inputs
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let value = if normalised.is_empty() {
+        None
+    } else {
+        Some(normalised)
+    };
+    sqlx::query("UPDATE ssh_profiles SET post_connect_inputs = ?, post_connect_delay_ms = COALESCE(?, post_connect_delay_ms) WHERE id = ?")
+        .bind(value)
+        .bind(delay_ms.map(|d| d.clamp(0, 30_000)))
+        .bind(&id)
+        .execute(pool.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    crate::cloud::scheduler::bump("ssh");
+    Ok(())
+}
