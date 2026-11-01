@@ -1,53 +1,134 @@
-//! Post-connect input replay.
+//! Post-connect steps: wait for the host to say something, then answer.
 //!
 //! A bastion like JumpServer does not give you a host shell on login — it
-//! shows an asset menu and waits for a number, a name or an IP. Until that
-//! is answered, every byte typed (a terminal keystroke or an agent's
-//! command) feeds the menu instead of the host.
+//! prints an asset menu and waits for a number, a name or an IP. Until that
+//! is answered, every byte typed (a terminal keystroke or an agent's command)
+//! feeds the menu instead of the host.
 //!
-//! A profile can store the answers; they are typed into the shell with a
-//! delay so the menu has a chance to appear. Same data is used by the
-//! terminal session and by MCP's shell channel.
+//! A blind "sleep 800ms then type" is fragile: a slow link types into the
+//! login banner, a fast one types before the menu renders. So a profile
+//! stores *steps*: wait until this text shows up in the output, pause a
+//! little, type the answer. A step without `expect` is a blind send (for
+//! prompts that print nothing, like a bare `Press Enter`).
+//!
+//! The same sequence runs for the terminal session and for MCP's shell
+//! channel — one configuration, both paths.
 
+use std::time::Duration;
+
+use russh::client::Msg;
+use russh::{Channel, ChannelMsg};
 use sqlx::SqlitePool;
 
-/// Default wait before the first line: long enough for the menu to render
-/// on a normal link, short enough not to feel laggy.
-pub const DEFAULT_FIRST_DELAY_MS: u64 = 800;
-/// Gap between subsequent lines.
-pub const GAP_MS: u64 = 400;
+/// Default pause after the expected text appears: enough for the prompt to
+/// finish rendering, short enough that it doesn't feel like a hang.
+pub const DEFAULT_DELAY_MS: u64 = 300;
+/// How long to wait for one `expect` before giving up on that step.
+pub const DEFAULT_TIMEOUT_MS: u64 = 15_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PostStep {
+    /// Text to wait for. `None` = send without waiting.
+    pub expect: Option<String>,
+    /// What to type (Enter is appended).
+    pub send: String,
+    /// Pause between seeing the text and typing.
+    pub delay_ms: u64,
+    /// Give up waiting for `expect` after this long (then send anyway).
+    pub timeout_ms: u64,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PostConnect {
-    pub lines: Vec<String>,
-    pub first_delay_ms: u64,
+    pub steps: Vec<PostStep>,
 }
 
 impl PostConnect {
     pub fn is_empty(&self) -> bool {
-        self.lines.is_empty()
+        self.steps.is_empty()
     }
 }
 
-/// Split the stored blob (one answer per line), dropping blank lines.
+/// Accept two shapes:
+///   `expect => answer`   one step per line (the UI's format)
+///   JSON `[{"expect": "...", "send": "104"}]`  for programmatic callers
+/// A bare line with no arrow is a blind send, which keeps the older
+/// "just type these lines" configuration working.
 pub fn parse(raw: Option<&str>, delay_ms: Option<i64>) -> PostConnect {
-    let lines = raw
-        .unwrap_or("")
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>();
-    let first = delay_ms
-        .map(|d| d.clamp(0, 30_000) as u64)
-        .unwrap_or(DEFAULT_FIRST_DELAY_MS);
-    PostConnect {
-        lines,
-        first_delay_ms: first,
+    let raw = raw.unwrap_or("").trim();
+    if raw.is_empty() {
+        return PostConnect::default();
     }
+    let delay = delay_ms
+        .map(|d| d.clamp(0, 30_000) as u64)
+        .unwrap_or(DEFAULT_DELAY_MS);
+
+    if raw.starts_with('[') {
+        if let Ok(steps) = serde_json::from_str::<Vec<serde_json::Value>>(raw) {
+            let parsed = steps
+                .into_iter()
+                .filter_map(|value| {
+                    let send = value.get("send")?.as_str()?.trim().to_string();
+                    if send.is_empty() {
+                        return None;
+                    }
+                    Some(PostStep {
+                        expect: value
+                            .get("expect")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty()),
+                        send,
+                        delay_ms: value
+                            .get("delayMs")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(delay),
+                        timeout_ms: value
+                            .get("timeoutMs")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(DEFAULT_TIMEOUT_MS),
+                    })
+                })
+                .collect::<Vec<_>>();
+            return PostConnect { steps: parsed };
+        }
+    }
+
+    let steps = raw
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| match line.split_once("=>") {
+            Some((expect, send)) => {
+                let send = send.trim();
+                if send.is_empty() {
+                    return None;
+                }
+                let expect = expect.trim();
+                Some(PostStep {
+                    expect: if expect.is_empty() {
+                        None
+                    } else {
+                        Some(expect.to_string())
+                    },
+                    send: send.to_string(),
+                    delay_ms: delay,
+                    timeout_ms: DEFAULT_TIMEOUT_MS,
+                })
+            }
+            None => Some(PostStep {
+                expect: None,
+                send: line.to_string(),
+                delay_ms: delay,
+                timeout_ms: DEFAULT_TIMEOUT_MS,
+            }),
+        })
+        .collect();
+    PostConnect { steps }
 }
 
-/// Load a profile's script. Any DB error degrades to "nothing to replay" —
-/// a broken lookup must not stop the user from connecting by hand.
+/// Load a profile's script. Any DB error degrades to "nothing to replay" — a
+/// broken lookup must not stop the user from connecting by hand.
 pub async fn load(pool: &SqlitePool, profile_id: &str) -> PostConnect {
     let row: Option<(Option<String>, Option<i64>)> = sqlx::query_as(
         "SELECT post_connect_inputs, post_connect_delay_ms FROM ssh_profiles WHERE id = ?",
@@ -63,27 +144,101 @@ pub async fn load(pool: &SqlitePool, profile_id: &str) -> PostConnect {
     }
 }
 
+/// Run the steps against an open shell channel.
+///
+/// `on_data` receives every chunk read while waiting, so the terminal can
+/// keep showing the banner/menu streaming in. Returns everything read (so a
+/// caller can log why a step timed out).
+pub async fn run_steps<F>(
+    chan: &mut Channel<Msg>,
+    steps: &[PostStep],
+    mut on_data: F,
+) -> Vec<u8>
+where
+    F: FnMut(&[u8]),
+{
+    let mut seen: Vec<u8> = Vec::new();
+    for step in steps {
+        if let Some(expect) = &step.expect {
+            let needle = expect.as_bytes();
+            let deadline =
+                tokio::time::Instant::now() + Duration::from_millis(step.timeout_ms);
+            let start = seen.len();
+            loop {
+                if seen[start..]
+                    .windows(needle.len())
+                    .any(|w| w == needle)
+                {
+                    break;
+                }
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    log::info!(
+                        "[ssh] post-connect: `{}` never appeared; sending anyway",
+                        expect
+                    );
+                    break;
+                }
+                match tokio::time::timeout(left, chan.wait()).await {
+                    Ok(Some(ChannelMsg::Data { data })) => {
+                        on_data(data.as_ref());
+                        seen.extend_from_slice(&data);
+                    }
+                    Ok(Some(ChannelMsg::ExtendedData { data, .. })) => {
+                        on_data(data.as_ref());
+                        seen.extend_from_slice(&data);
+                    }
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(_) => break,
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(step.delay_ms)).await;
+        if let Err(e) = chan.data(format!("{}\r", step.send).as_bytes()).await {
+            log::warn!("[ssh] post-connect input failed: {}", e);
+            break;
+        }
+    }
+    seen
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn blank_lines_and_spaces_are_dropped() {
-        let p = parse(Some(" 2 \n\n\n10.0.0.5\n"), None);
-        assert_eq!(p.lines, vec!["2".to_string(), "10.0.0.5".to_string()]);
-        assert_eq!(p.first_delay_ms, DEFAULT_FIRST_DELAY_MS);
+    fn expect_arrow_format_is_parsed() {
+        let p = parse(Some("Opt> => 104\n\n确认 => y\n"), Some(500));
+        assert_eq!(p.steps.len(), 2);
+        assert_eq!(p.steps[0].expect.as_deref(), Some("Opt>"));
+        assert_eq!(p.steps[0].send, "104");
+        assert_eq!(p.steps[0].delay_ms, 500);
+        assert_eq!(p.steps[1].send, "y");
     }
 
     #[test]
-    fn empty_stored_value_means_interact_directly() {
+    fn bare_lines_stay_blind_sends() {
+        let p = parse(Some("2\n10.0.0.5"), None);
+        assert_eq!(p.steps.len(), 2);
+        assert!(p.steps.iter().all(|s| s.expect.is_none()));
+        assert_eq!(p.steps[0].delay_ms, DEFAULT_DELAY_MS);
+    }
+
+    #[test]
+    fn json_steps_carry_their_own_timing() {
+        let raw = r#"[{"expect":"Opt>","send":"104","delayMs":700},{"send":"y"}]"#;
+        let p = parse(Some(raw), None);
+        assert_eq!(p.steps.len(), 2);
+        assert_eq!(p.steps[0].delay_ms, 700);
+        assert_eq!(p.steps[1].send, "y");
+        assert_eq!(p.steps[1].timeout_ms, DEFAULT_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn empty_and_arrowless_answers_are_dropped() {
         assert!(parse(None, None).is_empty());
-        assert!(parse(Some(""), Some(900)).is_empty());
-    }
-
-    #[test]
-    fn delay_is_clamped_to_something_sane() {
-        assert_eq!(parse(Some("1"), Some(-5)).first_delay_ms, 0);
-        assert_eq!(parse(Some("1"), Some(999_999)).first_delay_ms, 30_000);
-        assert_eq!(parse(Some("1"), Some(1500)).first_delay_ms, 1500);
+        assert!(parse(Some("   "), Some(900)).is_empty());
+        assert!(parse(Some("Opt> =>"), None).is_empty());
     }
 }

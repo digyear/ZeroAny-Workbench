@@ -29,7 +29,7 @@
   let totpBusy = $state(false);
   // Bastion asset menus: answers typed right after the shell opens.
   let postInputs = $state('');
-  let postDelay = $state(800);
+  let postDelay = $state(300);
   let totpTest = $state<{ ok: boolean; detail: string } | null>(null);
   let showTotpHelp = $state(false);
   let qrInput: HTMLInputElement | undefined = $state();
@@ -55,7 +55,7 @@
       password = '';
       totpCode = null;
       postInputs = profile.postConnectInputs ?? '';
-      postDelay = profile.postConnectDelayMs ?? 800;
+      postDelay = profile.postConnectDelayMs ?? 300;
       void loadTotp(profile.id);
       revealSecret = false;
       // ProxyCommand wins over jumpProfileId if both populated — matches
@@ -177,7 +177,7 @@
       totpHas = false;
       totpCode = null;
       postInputs = profile.postConnectInputs ?? '';
-      postDelay = profile.postConnectDelayMs ?? 800;
+      postDelay = profile.postConnectDelayMs ?? 300;
       showToast('TOTP seed removed', 'success');
     } catch (e) {
       showToast(String(e), 'error');
@@ -328,13 +328,15 @@
             class="sshd-input mono"
             rows="2"
             bind:value={postInputs}
-            placeholder="e.g. 2   (one answer per line — asset number, name or IP)"
+            placeholder="Opt> => 104   (one step per line: wait for this text, then type this)"
           ></textarea>
           <div class="sshd-totp-note">
             JumpServer-style bastions ask which asset to open before you get a host shell;
-            anything typed until then goes to the menu. These lines are typed for you, in
-            order, {postDelay}ms after the shell opens — the same for the terminal and for
-            agents.
+            anything typed until then goes to the menu. Each line is
+            <span class="mono">prompt =&gt; answer</span>: the app waits until that text
+            appears in the output, pauses {postDelay}ms, then types the answer. A line with
+            no <span class="mono">=&gt;</span> is typed without waiting (for prompts that
+            print nothing). Same steps for the terminal and for agents.
           </div>
         </div>
 

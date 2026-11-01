@@ -232,10 +232,12 @@ pub(crate) async fn exec_on_handle(
     // shell: an `exec` channel there is either a silent no-op or consumes
     // the single channel the bastion allows. Go straight to the shell.
     if let Some(post) = post.filter(|p| !p.is_empty()) {
-        return exec_via_shell(handle, command, Some(post)).await.ok_or_else(|| {
-            "host answered the shell attempt with nothing — check the After-connect lines"
-                .to_string()
-        });
+        return match exec_via_shell(handle, command, Some(post)).await {
+            Some(result) => result,
+            None => Err(
+                "could not open a shell channel — check the After-connect lines".to_string(),
+            ),
+        };
     }
 
     let mut channel = handle
@@ -273,7 +275,7 @@ pub(crate) async fn exec_on_handle(
     // second channel (the user's terminal channel is untouched).
     if exit_code.unwrap_or(0) == 0 && stdout.is_empty() && stderr.is_empty() {
         if let Some(result) = exec_via_shell(handle, command, post).await {
-            return Ok(result);
+            return result;
         }
     }
 
@@ -304,7 +306,7 @@ async fn exec_via_shell(
     handle: &russh::client::Handle<crate::modes::ssh::ssh_session::ClientHandler>,
     command: &str,
     post: Option<&crate::modes::ssh::post_connect::PostConnect>,
-) -> Option<Value> {
+) -> Option<Result<Value, String>> {
     let mut channel = handle.channel_open_session().await.ok()?;
     channel
         .request_pty(false, "xterm-256color", 200, 50, 0, 0, &[])
@@ -313,17 +315,9 @@ async fn exec_via_shell(
     channel.request_shell(false).await.ok()?;
 
     // Answer a bastion's asset menu first; otherwise the sentinel lands in
-    // the menu and nothing runs.
+    // the menu and nothing runs. Steps wait for their prompt text.
     if let Some(post) = post.filter(|p| !p.is_empty()) {
-        for (idx, line) in post.lines.iter().enumerate() {
-            let wait = if idx == 0 {
-                post.first_delay_ms
-            } else {
-                crate::modes::ssh::post_connect::GAP_MS
-            };
-            tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
-            channel.data(format!("{}\r", line).as_bytes()).await.ok()?;
-        }
+        crate::modes::ssh::post_connect::run_steps(&mut channel, &post.steps, |_| {}).await;
     }
 
     let tag = uuid::Uuid::new_v4().simple().to_string();
@@ -378,15 +372,31 @@ async fn exec_via_shell(
     let _ = channel.close().await;
 
     let text = String::from_utf8_lossy(&raw).replace("\r\n", "\n");
-    let (body, exit_code) = split_sentinel_output(&text, &begin, &end)?;
-    Some(json!({
+    let Some((body, exit_code)) = split_sentinel_output(&text, &begin, &end) else {
+        // The command never reached a shell — most often the host is sitting
+        // in a bastion menu. Hand back what it *did* say so the caller can
+        // configure an `expect` for it instead of guessing.
+        let tail: String = text
+            .chars()
+            .rev()
+            .take(600)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        return Some(Err(format!(
+            "the command never reached a shell (no output markers). Host said:\n{}",
+            tail.trim()
+        )));
+    };
+    Some(Ok(json!({
         "command": command,
         "stdout": body,
         "stderr": "",
         "exitCode": exit_code,
         "truncated": truncated,
         "mode": "shell",
-    }))
+    })))
 }
 
 

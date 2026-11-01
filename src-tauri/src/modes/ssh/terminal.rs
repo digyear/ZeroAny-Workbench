@@ -183,23 +183,18 @@ async fn run_ssh_session(
     // own auth — the only way in on a host that wants a one-time code. The
     // guard drops at the end of this session, closing the connection with it.
     // A bastion's asset menu must be answered before anything else is typed.
+    // Each step waits for its prompt text, pauses, then answers — a blind
+    // sleep would type into the banner on a slow link.
     let post = crate::modes::ssh::post_connect::load(pool, profile_id).await;
     if !post.is_empty() {
-        for (idx, line) in post.lines.iter().enumerate() {
-            let wait = if idx == 0 {
-                post.first_delay_ms
-            } else {
-                crate::modes::ssh::post_connect::GAP_MS
-            };
-            tokio::time::sleep(std::time::Duration::from_millis(wait)).await;
-            if let Err(e) = chan.data(format!("{}\r", line).as_bytes()).await {
-                log::warn!("[ssh] post-connect input failed: {}", e);
-                break;
-            }
-        }
+        let tid = terminal_id.clone();
+        crate::modes::ssh::post_connect::run_steps(&mut chan, &post.steps, |data| {
+            fanout::publish(&tid, data);
+        })
+        .await;
         log::info!(
-            "[ssh] replayed {} post-connect line(s) for {}",
-            post.lines.len(),
+            "[ssh] replayed {} post-connect step(s) for {}",
+            post.steps.len(),
             profile_id
         );
     }
