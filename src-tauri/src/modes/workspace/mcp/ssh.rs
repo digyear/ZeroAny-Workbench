@@ -248,14 +248,23 @@ pub(crate) async fn exec_on_handle(
         }
     }
 
-    Ok(json!({
+    let empty = stdout.is_empty() && stderr.is_empty();
+    let mut value = json!({
         "command": command,
         "stdout": String::from_utf8_lossy(&stdout),
         "stderr": String::from_utf8_lossy(&stderr),
         "exitCode": exit_code,
         "truncated": truncated,
         "mode": "exec",
-    }))
+    });
+    if empty {
+        // No output from either transport usually means the host only lets
+        // one channel live (a bastion). Point the caller at shared mode.
+        value["note"] = json!(
+            "host produced no output for this command — if it sits behind a bastion, retry with mode \"shared\" so the command runs in your open SSH terminal"
+        );
+    }
+    Ok(value)
 }
 
 /// Run the command inside a dedicated shell channel instead of an exec
@@ -336,6 +345,66 @@ async fn exec_via_shell(
     }))
 }
 
+
+/// Strip what a PTY adds around a captured payload: the echoed
+/// end-marker `printf` (which contains the marker text), ANSI/OSC title
+/// sequences, and trailing prompt-only lines.
+fn clean_shell_body(body: &str, end: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for line in body.trim_end_matches('\n').split('\n') {
+        if line.contains(end) {
+            break;
+        }
+        lines.push(strip_ansi(line));
+    }
+    while let Some(last) = lines.last() {
+        let t = last.trim_end();
+        if t.is_empty() || t.ends_with('#') || t.ends_with('$') || t.ends_with('%') {
+            lines.pop();
+        } else {
+            break;
+        }
+    }
+    lines.join("\n")
+}
+
+/// Drop CSI (`ESC [ … final`) and OSC (`ESC ] … BEL|ST`) sequences.
+fn strip_ansi(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            Some('[') => {
+                chars.next();
+                // CSI: parameters then a final byte in @..~
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' {
+                        break;
+                    }
+                    if c == '\u{1b}' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// Pull the payload out of a sentinel-wrapped shell transcript. Returns the
 /// text between the markers and the exit code printed after the end marker.
 /// Everything before the first begin marker (banner, prompt, the echoed
@@ -352,7 +421,7 @@ pub(crate) fn split_sentinel_output(text: &str, begin: &str, end: &str) -> Optio
     let close = format!("\n{} ", end);
     let stop = rest.find(&close)?;
     // The newline that separates the payload from the end marker is ours.
-    let body = rest[..stop].trim_end_matches('\n').to_string();
+    let body = clean_shell_body(&rest[..stop], end);
     let tail = &rest[stop + close.len()..];
     let code = tail
         .split_whitespace()
@@ -418,5 +487,30 @@ mod tests {
         push_capped(&mut buf, b"ok\n", &mut truncated);
         assert_eq!(buf, b"ok\n");
         assert!(!truncated);
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::{clean_shell_body, strip_ansi};
+
+    #[test]
+    fn pty_noise_around_the_payload_is_removed() {
+        // Shape of a real capture: output, then the echoed end-marker
+        // printf, then the prompt's OSC title sequence.
+        let body = "Linux box 6.1\n\x1b]0;root@box:~\\\x07[root@box ~]# printf '\\\\n__E__ %s\\\\n' \"$?\"\n[root@box ~]# ";
+        assert_eq!(clean_shell_body(body, "__E__"), "Linux box 6.1");
+    }
+
+    #[test]
+    fn ansi_colours_and_multiline_output_survive() {
+        let body = "\x1b[32mok\x1b[0m\nline2\nline3\n";
+        assert_eq!(clean_shell_body(body, "__E__"), "ok\nline2\nline3");
+    }
+
+    #[test]
+    fn strip_ansi_handles_csi_and_osc() {
+        assert_eq!(strip_ansi("a\x1b[1;31mb\x1b[0mc"), "abc");
+        assert_eq!(strip_ansi("x\x1b]0;title\x07y"), "xy");
     }
 }
