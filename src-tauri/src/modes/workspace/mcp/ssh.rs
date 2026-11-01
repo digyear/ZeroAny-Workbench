@@ -431,7 +431,18 @@ fn clean_shell_body(body: &str, end: &str) -> String {
     }
     while let Some(last) = lines.last() {
         let t = last.trim_end();
-        if t.is_empty() || t.ends_with('#') || t.ends_with('$') || t.ends_with('%') {
+        // Drop a trailing prompt, and a trailing prompt *plus the start of our
+        // own echoed command* — on a narrow PTY that echo can wrap, leaving
+        // `[root@host ~]# printf '` as its own line.
+        let prompt_with_echo = ["]# ", "]$ ", "] $ ", "] # "]
+            .iter()
+            .any(|p| t.contains(p));
+        if t.is_empty()
+            || t.ends_with('#')
+            || t.ends_with('$')
+            || t.ends_with('%')
+            || prompt_with_echo
+        {
             lines.pop();
         } else {
             break;
@@ -572,6 +583,14 @@ mod cleanup_tests {
         // printf, then the prompt's OSC title sequence.
         let body = "Linux box 6.1\n\x1b]0;root@box:~\\\x07[root@box ~]# printf '\\\\n__E__ %s\\\\n' \"$?\"\n[root@box ~]# ";
         assert_eq!(clean_shell_body(body, "__E__"), "Linux box 6.1");
+    }
+
+    #[test]
+    fn wrapped_echo_of_our_own_command_is_dropped() {
+        // Real shape from a JumpServer shell on a narrow PTY: the echoed
+        // end-marker printf wraps, so its first half is its own line.
+        let body = "lute-dev-04\nLinux box 6.1\n[root@lute-dev-04 ~]# printf '";
+        assert_eq!(clean_shell_body(body, "__E__"), "lute-dev-04\nLinux box 6.1");
     }
 
     #[test]
