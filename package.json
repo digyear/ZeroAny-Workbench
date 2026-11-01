@@ -1,7 +1,7 @@
 {
   "name": "zeroany-workbench",
   "private": true,
-  "version": "4.4.4",
+  "version": "4.4.5",
   "description": "ZeroAny Workbench — Zero, one, any workspace",
   "author": "ZeroAny Workbench contributors",
   "license": "Apache-2.0",
