@@ -11113,7 +11113,7 @@ dependencies = [
 
 [[package]]
 name = "zeroany-workbench"
-version = "4.4.6"
+version = "4.4.7"
 dependencies = [
  "aes-gcm 0.10.3",
  "async-stream",
